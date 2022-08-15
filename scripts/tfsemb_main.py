@@ -276,7 +276,7 @@ def model_forward_pass(args, data_dl):
         for batch_idx, batch in enumerate(data_dl):
             batch = batch.to(args.device)
             model_output = model(batch)
-
+            breakpoint()
             logits = model_output.logits.cpu()
 
             embeddings = extract_select_vectors_all_layers(
@@ -519,12 +519,11 @@ def generate_conversational_embeddings(args, df):
 
 def make_input_from_tokens(args, token_list):
     size = args.context_length
-
     if len(token_list) <= size:
         windows = [tuple(token_list)]
     else:
         windows = [
-            tuple(token_list[x : x + size]) for x in range(len(token_list) - size + 1)
+            tuple(token_list[x : x + size + 1]) for x in range(len(token_list) - size + 1)
         ]
 
     return windows

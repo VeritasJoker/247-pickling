@@ -95,9 +95,9 @@ download-247-pickles:
 ## settings for targets: generate-embeddings, concatenate-embeddings
 %-embeddings: CMD := python
 # {echo | python | sbatch submit.sh}
-%-embeddings: PRJCT_ID := podcast
+%-embeddings: PRJCT_ID := tfs
 # {tfs | podcast}
-%-embeddings: SID := 661
+%-embeddings: SID := 625
 # {625 | 676 | 661} 
 %-embeddings: CONV_IDS = $(shell seq 1 1) 
 # {54 for 625 | 78 for 676 | 1 for 661}
@@ -110,7 +110,7 @@ download-247-pickles:
 "facebook/opt-125m", "facebook/opt-350m", "facebook/opt-1.3b", \
 "facebook/opt-2.7b", "facebook/opt-6.7b", "facebook/opt-30b", \
 "facebook/blenderbot_small-90M"}
-%-embeddings: CNXT_LEN := 2048
+%-embeddings: CNXT_LEN := 1024
 %-embeddings: HIST := --history
 %-embeddings: LAYER := all
 # {'all' for all layers | 'last' for the last layer | (list of) integer(s) >= 1}
