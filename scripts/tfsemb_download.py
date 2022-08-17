@@ -1,6 +1,11 @@
 import os
 
-from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM,
+    AutoModelForMaskedLM,
+    AutoTokenizer,
+)
 
 CAUSAL_MODELS = [
     "gpt2",
@@ -19,7 +24,16 @@ CAUSAL_MODELS = [
 ]
 SEQ2SEQ_MODELS = ["facebook/blenderbot_small-90M"]
 
-CLONE_MODELS = ["EleutherAI/gpt-neox-20b", "facebook/opt-6.7b", "facebook/opt-30b"]
+CLONE_MODELS = [
+    "EleutherAI/gpt-neox-20b",
+    "facebook/opt-6.7b",
+    "facebook/opt-30b",
+]
+
+MLM_MODELS = [
+    "bert-base-cased",
+    "bert-large-uncased",
+]
 
 # TODO: Add MLM_MODELS (Masked Language Models)
 
@@ -84,7 +98,11 @@ def clone_model_repo(
     if local_files_only:
         if os.path.exists(model_dir):
             model, tokenizer = download_tokenizer_and_model(
-                CACHE_DIR, tokenizer_class, model_class, model_dir, local_files_only
+                CACHE_DIR,
+                tokenizer_class,
+                model_class,
+                model_dir,
+                local_files_only,
             )
             return model, tokenizer
         else:
@@ -97,7 +115,9 @@ def clone_model_repo(
                 os.system("module load git")
 
             os.system(f"git lfs install")
-            os.system(f"git clone https://huggingface.co/{model_name} {model_dir}")
+            os.system(
+                f"git clone https://huggingface.co/{model_name} {model_dir}"
+            )
         except:
             # FIXME: Raise appropriate exception
             print("Possible git lfs version issues")
@@ -110,7 +130,9 @@ def set_cache_dir():
     return CACHE_DIR
 
 
-def download_tokenizers_and_models(model_name=None, local_files_only=False, debug=True):
+def download_tokenizers_and_models(
+    model_name=None, local_files_only=False, debug=True
+):
     """This function downloads the tokenizer and model for the specified model name.
 
     Args:
@@ -130,9 +152,12 @@ def download_tokenizers_and_models(model_name=None, local_files_only=False, debu
     if model_name == "causal" or model_name in CAUSAL_MODELS:
         model_class = AutoModelForCausalLM
         MODELS = CAUSAL_MODELS if model_name == "causal" else [model_name]
-    elif model_name == "seq2seq":
+    elif model_name == "seq2seq" or model_name in SEQ2SEQ_MODELS:
         model_class = AutoModelForSeq2SeqLM
         MODELS = SEQ2SEQ_MODELS if model_name == "seq2seq" else [model_name]
+    elif model_name == "mlm" or model_name in MLM_MODELS:
+        model_class = AutoModelForMaskedLM
+        MODELS = MLM_MODELS if model_name == "mlm" else [model_name]
     else:
         print("Invalid Model Name")
         exit(1)
