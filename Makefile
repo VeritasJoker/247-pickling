@@ -93,13 +93,13 @@ download-247-pickles:
 
 
 ## settings for targets: generate-embeddings, concatenate-embeddings
-%-embeddings: CMD := sbatch submit.sh
+%-embeddings: CMD := python
 # {echo | python | sbatch submit.sh}
 %-embeddings: PRJCT_ID := tfs
 # {tfs | podcast}
 %-embeddings: SID := 625
 # {625 | 676 | 661} 
-%-embeddings: CONV_IDS = $(shell seq 1 54) 
+%-embeddings: CONV_IDS = $(shell seq 1 1) 
 # {54 for 625 | 78 for 676 | 1 for 661}
 %-embeddings: PKL_IDENTIFIER := full
 # {full | trimmed | binned}
@@ -112,12 +112,12 @@ download-247-pickles:
 "facebook/blenderbot_small-90M"}
 %-embeddings: CNXT_LEN := 512
 %-embeddings: HIST := --history
-%-embeddings: LAYER := all
+%-embeddings: LAYER := last
 # {'all' for all layers | 'last' for the last layer | (list of) integer(s) >= 1}
 # Note: embeddings file is the same for all podcast subjects \
 and hence only generate once using subject: 661
 
-# 38 and 39 failed
+# 38 and 39 will fail for bbot and bert (both are 1 long utterance of production)
 
 # generates embeddings (for each conversation separately)
 generate-embeddings:

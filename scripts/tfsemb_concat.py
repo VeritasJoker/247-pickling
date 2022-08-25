@@ -41,12 +41,18 @@ def save_pickle(item, file_name):
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--model-name", type=str, default="bert-large-uncased-whole-word-masking"
+        "--model-name",
+        type=str,
+        default="bert-large-uncased-whole-word-masking",
     )
     parser.add_argument("--embedding-type", type=str, default="glove")
     parser.add_argument("--context-length", type=int, default=0)
-    parser.add_argument("--save-predictions", action="store_true", default=False)
-    parser.add_argument("--save-hidden-states", action="store_true", default=False)
+    parser.add_argument(
+        "--save-predictions", action="store_true", default=False
+    )
+    parser.add_argument(
+        "--save-hidden-states", action="store_true", default=False
+    )
     parser.add_argument("--suffix", type=str, default="")
     parser.add_argument("--verbose", action="store_true", default=False)
     parser.add_argument("--subject", type=str, default="625")
@@ -63,7 +69,9 @@ def main():
 
     if args.subject == "625":
         num_convs = 54
-    elif args.subject == "676" and "blenderbot" in args.embedding_type:
+    elif args.subject == "676" and (
+        "blenderbot" in args.embedding_type or "bert" in args.embedding_type
+    ):
         num_convs = 76
     elif args.subject == "676":
         num_convs = 78

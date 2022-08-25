@@ -167,15 +167,15 @@ def process_extracted_embeddings(args, concat_output):
     concatenated_embeddings = torch.cat(concat_output, dim=0).numpy()
     extracted_embeddings = concatenated_embeddings
 
-    if args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
-        emb_dim = concatenated_embeddings.shape[-1]
+    # if args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
+    #     emb_dim = concatenated_embeddings.shape[-1]
 
-        # the first token is always empty
-        init_token_embedding = np.empty((1, emb_dim)) * np.nan
+    #     # the first token is always empty
+    #     init_token_embedding = np.empty((1, emb_dim)) * np.nan
 
-        extracted_embeddings = np.concatenate(
-            [init_token_embedding, concatenated_embeddings], axis=0
-        )
+    #     extracted_embeddings = np.concatenate(
+    #         [init_token_embedding, concatenated_embeddings], axis=0
+    #     )
 
     return extracted_embeddings
 
@@ -198,9 +198,12 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
     # (batch_size, max_len, vocab_size)
 
     # concatenate all batches
+    breakpoint()
     prediction_scores = torch.cat(concat_logits, axis=0)
     if "blenderbot" in args.embedding_type:
         true_y = torch.tensor(sentence_token_ids).unsqueeze(-1)
+    elif "bert" in args.embedding_type:
+        true_y = torch.tensor([sentence_token_ids])
     else:
         if prediction_scores.shape[0] == 0:
             return [None], [None], [None]
@@ -263,8 +266,11 @@ def extract_select_vectors(batch_idx, array):
 
 
 def extract_select_vectors_bert(mask_idx, array):
-
-    x = array[:, mask_idx, :].clone()
+    if mask_idx != -1:
+        x = array[:, mask_idx, :].clone()
+    else:
+        breakpoint()
+        x = array[:, 1:-1, :].clone()
 
     return x
 
@@ -630,12 +636,16 @@ def get_utt_info(args, df):
         df["utt_len"].bfill().astype(int)
     )  # get utterance length for each token
 
+    original_len = len(df.index)
     df = df.loc[df["utt_len"] <= args.context_length - 2, :]
+    new_len = len(df.index)
+    if new_len < original_len:
+        print(f"Deleted Utterance, reducing {original_len - new_len} tokens ")
 
     return df
 
 
-def make_input_from_tokens_bert(args, token_list, window_type):
+def make_input_from_tokens_mask(args, token_list, window_type):
 
     assert len(token_list) == len(window_type.index)
     special_tokens = args.tokenizer.encode("[MASK]")
@@ -645,10 +655,7 @@ def make_input_from_tokens_bert(args, token_list, window_type):
         special_tokens[2],
     )
 
-    # size = args.context_length - 2
-    # half_size = int(size / 2)
     windows = []
-
     for i, _ in enumerate(token_list):
         if window_type.loc[i, "utt"] == 0:  # comprehension
             windows.append(
@@ -676,30 +683,17 @@ def make_input_from_tokens_bert(args, token_list, window_type):
                 + (end_token,)
             )
 
-        # if window_type.loc[i, "utt"] == 0:  # comprehension
-        #     windows.append(
-        #         (start_token,)
-        #         + tuple(token_list[max(i + 1 - size, 0) : i])
-        #         + (mask_token, end_token)
-        #     )  # shifting window (start, all, mask, end)
-        # else:  # production
-        #     back_len = min(
-        #         min(
-        #             window_type.loc[i, "utt_len"]
-        #             - window_type.loc[i, "utt_index"],
-        #             size,
-        #         ),
-        #         half_size,
-        #     )  # window len after word
-        #     front_len = min(i, size - back_len - 1)  # window len before word
+    return windows
 
-        #     windows.append(
-        #         (start_token,)
-        #         + tuple(token_list[i - front_len : i])
-        #         + (mask_token,)
-        #         + tuple(token_list[i + 1 : i + back_len + 1])
-        #         + (end_token,)
-        #     )
+
+def make_input_from_tokens_unmasked(args, df):
+
+    windows = df.groupby("sentence_idx")["token_id"].apply(tuple).tolist()
+    if "bert" in args.tokenizer.name_or_path:
+        special_tokens = args.tokenizer.encode("")
+        start_token, end_token = (special_tokens[0], special_tokens[1])
+        windows = [(start_token,) + window + (end_token,) for window in windows]
+
     return windows
 
 
@@ -715,24 +709,36 @@ def model_forward_pass_bert(args, model_input):
         all_logits = []
         mask_id = args.tokenizer.encode("[MASK]")[1]
         for _, batch in enumerate(model_input):
-            mask_idx = batch.index(mask_id)
+            try:
+                mask_idx = batch.index(mask_id)
+            except:
+                mask_idx = -1
             batch = torch.tensor([batch])
             batch = batch.to(args.device)
             model_output = model(batch)
             logits = model_output.logits.cpu()
 
-            embeddings = extract_select_vectors_all_layers_bert(
-                mask_idx, model_output.hidden_states, args.layer_idx
-            )
-            logits = extract_select_vectors_bert(mask_idx, logits)
-
-            all_embeddings.append(embeddings)
-            all_logits.append(logits)
+            if mask_idx != -1 and "bert" in args.tokenizer.name_or_path:
+                embeddings = extract_select_vectors_all_layers_bert(
+                    mask_idx, model_output.hidden_states, args.layer_idx
+                )
+                logits = extract_select_vectors_bert(mask_idx, logits)
+                all_embeddings.append(embeddings)
+                all_logits.append(logits)
+            else:
+                for i in np.arange(0, batch.size()[1]):  # for gpt2
+                    # for i in np.arange(1, batch.size()[1] - 1): # for bert
+                    embeddings = extract_select_vectors_all_layers_bert(
+                        i, model_output.hidden_states, args.layer_idx
+                    )
+                    single_logits = extract_select_vectors_bert(i, logits)
+                    all_embeddings.append(embeddings)
+                    all_logits.append(single_logits)
 
     return all_embeddings, all_logits
 
 
-def generate_mlm_embeddings(args, df):
+def generate_mlm_embeddings(args, df, masked=True):
     df = tokenize_and_explode(args, df)
     final_embeddings = []
     final_top1_word = []
@@ -740,20 +746,25 @@ def generate_mlm_embeddings(args, df):
     final_true_y_prob = []
     df = get_utt_info(args, df)
     token_list = df["token_id"].tolist()
-    utt_info = df.loc[:, ("utt", "utt_index", "utt_len")]
-    model_input = make_input_from_tokens_bert(args, token_list, utt_info)
+
+    if masked:
+        utt_info = df.loc[:, ("utt", "utt_index", "utt_len")].reset_index()
+        model_input = make_input_from_tokens_mask(args, token_list, utt_info)
+    else:
+        model_input = make_input_from_tokens_unmasked(args, df)
+    breakpoint()
     embeddings, logits = model_forward_pass_bert(args, model_input)
     embeddings = process_extracted_embeddings_all_layers(args, embeddings)
     for _, item in embeddings.items():
         assert item.shape[0] == len(token_list)
     final_embeddings.append(embeddings)
 
-    # top1_word, top1_prob, true_y_prob, entropy = process_extracted_logits(
-    #     args, logits, model_input
-    # )
-    # final_top1_word.extend(top1_word)
-    # final_top1_prob.extend(top1_prob)
-    # final_true_y_prob.extend(true_y_prob)
+    top1_word, top1_prob, true_y_prob, entropy = process_extracted_logits(
+        args, logits, token_list
+    )
+    final_top1_word.extend(top1_word)
+    final_top1_prob.extend(top1_prob)
+    final_true_y_prob.extend(true_y_prob)
 
     if len(final_embeddings) > 1:
         # TODO concat all embeddings and return a dictionary
@@ -762,11 +773,11 @@ def generate_mlm_embeddings(args, df):
     else:
         final_embeddings = final_embeddings[0]
 
-    # df["top1_pred"] = final_top1_word
-    # df["top1_pred_prob"] = final_top1_prob
-    # df["true_pred_prob"] = final_true_y_prob
-    # df["surprise"] = -df["true_pred_prob"] * np.log2(df["true_pred_prob"])
-    # df["entropy"] = entropy
+    df["top1_pred"] = final_top1_word
+    df["top1_pred_prob"] = final_top1_prob
+    df["true_pred_prob"] = final_true_y_prob
+    df["surprise"] = -df["true_pred_prob"] * np.log2(df["true_pred_prob"])
+    df["entropy"] = entropy
     df.drop(columns=["utt", "utt_len", "utt_index"], errors="ignore")
 
     return df, final_embeddings
@@ -967,12 +978,12 @@ def main():
 
     if args.embedding_type == "glove50":
         generate_func = generate_glove_embeddings
+    elif args.embedding_type in tfsemb_dwnld.MLM_MODELS:
+        generate_func = generate_mlm_embeddings
     elif args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
         generate_func = generate_causal_embeddings
     elif args.embedding_type in tfsemb_dwnld.SEQ2SEQ_MODELS:
         generate_func = generate_conversational_embeddings
-    elif args.embedding_type in tfsemb_dwnld.MLM_MODELS:
-        generate_func = generate_mlm_embeddings
     else:
         generate_func = generate_embeddings
 
