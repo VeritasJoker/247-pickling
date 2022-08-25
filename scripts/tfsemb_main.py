@@ -167,15 +167,18 @@ def process_extracted_embeddings(args, concat_output):
     concatenated_embeddings = torch.cat(concat_output, dim=0).numpy()
     extracted_embeddings = concatenated_embeddings
 
-    # if args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
-    #     emb_dim = concatenated_embeddings.shape[-1]
+    if (
+        args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS
+        and args.embedding_type not in tfsemb_dwnld.MLM_MODELS
+    ):
+        emb_dim = concatenated_embeddings.shape[-1]
 
-    #     # the first token is always empty
-    #     init_token_embedding = np.empty((1, emb_dim)) * np.nan
+        # the first token is always empty
+        init_token_embedding = np.empty((1, emb_dim)) * np.nan
 
-    #     extracted_embeddings = np.concatenate(
-    #         [init_token_embedding, concatenated_embeddings], axis=0
-    #     )
+        extracted_embeddings = np.concatenate(
+            [init_token_embedding, concatenated_embeddings], axis=0
+        )
 
     return extracted_embeddings
 
@@ -202,8 +205,6 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
     prediction_scores = torch.cat(concat_logits, axis=0)
     if "blenderbot" in args.embedding_type:
         true_y = torch.tensor(sentence_token_ids).unsqueeze(-1)
-    elif "bert" in args.embedding_type:
-        true_y = torch.tensor([sentence_token_ids])
     else:
         if prediction_scores.shape[0] == 0:
             return [None], [None], [None]
@@ -212,7 +213,7 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
         else:
             sti = torch.tensor(sentence_token_ids)
             true_y = torch.cat([sti[0, 1:], sti[1:, -1]]).unsqueeze(-1)
-
+    breakpoint()
     prediction_probabilities = F.softmax(prediction_scores, dim=1)
 
     logp = np.log2(prediction_probabilities)
@@ -621,26 +622,24 @@ def generate_causal_embeddings(args, df):
 
 def get_utt_info(args, df):
 
-    df["utt"] = np.where(
-        df["speaker"] == "Speaker1", 1, 0
-    )  # seperate utterance
-
-    df["utt_index"] = (
+    df["token_idx_in_sntnc"] = (
         df.groupby(df.sentence_idx).cumcount() + 1
-    )  # get index for each token in the utterance
+    )  # get token_idx in sentence
 
-    df["utt_len"] = np.where(
-        df["utt"].ne(df["utt"].shift(-1)), df["utt_index"], np.nan
+    df["num_tokens_in_sntnc"] = np.where(
+        df["production"].ne(df["production"].shift(-1)),
+        df["token_idx_in_sntnc"],
+        np.nan,
     )
-    df["utt_len"] = (
-        df["utt_len"].bfill().astype(int)
-    )  # get utterance length for each token
+    df["num_tokens_in_sntnc"] = (
+        df["num_tokens_in_sntnc"].bfill().astype(int)
+    )  # get # of tokens in sentence
 
     original_len = len(df.index)
-    df = df.loc[df["utt_len"] <= args.context_length - 2, :]
+    df = df.loc[df["num_tokens_in_sntnc"] <= args.context_length - 2, :]
     new_len = len(df.index)
     if new_len < original_len:
-        print(f"Deleted Utterance, reducing {original_len - new_len} tokens ")
+        print(f"Deleted sentence, reducing {original_len - new_len} tokens ")
 
     return df
 
@@ -657,10 +656,14 @@ def make_input_from_tokens_mask(args, token_list, window_type):
 
     windows = []
     for i, _ in enumerate(token_list):
-        if window_type.loc[i, "utt"] == 0:  # comprehension
+        if window_type.loc[i, "production"] == 0:  # comprehension
             windows.append(
                 (start_token,)
-                + tuple(token_list[i + 1 - window_type.loc[i, "utt_index"] : i])
+                + tuple(
+                    token_list[
+                        i + 1 - window_type.loc[i, "token_idx_in_sntnc"] : i
+                    ]
+                )
                 + (
                     mask_token,
                     end_token,
@@ -669,14 +672,18 @@ def make_input_from_tokens_mask(args, token_list, window_type):
         else:  # production
             windows.append(
                 (start_token,)
-                + tuple(token_list[i + 1 - window_type.loc[i, "utt_index"] : i])
+                + tuple(
+                    token_list[
+                        i + 1 - window_type.loc[i, "token_idx_in_sntnc"] : i
+                    ]
+                )
                 + (mask_token,)
                 + tuple(
                     token_list[
                         i
                         + 1 : i
-                        + window_type.loc[i, "utt_len"]
-                        - window_type.loc[i, "utt_index"]
+                        + window_type.loc[i, "num_tokens_in_sntnc"]
+                        - window_type.loc[i, "token_idx_in_sntnc"]
                         + 1
                     ]
                 )
@@ -748,11 +755,13 @@ def generate_mlm_embeddings(args, df, masked=True):
     token_list = df["token_id"].tolist()
 
     if masked:
-        utt_info = df.loc[:, ("utt", "utt_index", "utt_len")].reset_index()
-        model_input = make_input_from_tokens_mask(args, token_list, utt_info)
+        sntnc_info = df.loc[
+            :, ("production", "token_idx_in_sntnc", "num_tokens_in_sntnc")
+        ].reset_index()
+        model_input = make_input_from_tokens_mask(args, token_list, sntnc_info)
     else:
         model_input = make_input_from_tokens_unmasked(args, df)
-    breakpoint()
+
     embeddings, logits = model_forward_pass_bert(args, model_input)
     embeddings = process_extracted_embeddings_all_layers(args, embeddings)
     for _, item in embeddings.items():

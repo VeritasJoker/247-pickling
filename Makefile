@@ -103,7 +103,7 @@ download-247-pickles:
 # {54 for 625 | 78 for 676 | 1 for 661}
 %-embeddings: PKL_IDENTIFIER := full
 # {full | trimmed | binned}
-%-embeddings: EMB_TYPE := bert-base-cased
+%-embeddings: EMB_TYPE := gpt2-xl
 # {"gpt2", "gpt2-xl", "gpt2-large", \
 "EleutherAI/gpt-neo-125M", "EleutherAI/gpt-neo-1.3B", "EleutherAI/gpt-neo-2.7B", \
 "EleutherAI/gpt-neox-20b", \

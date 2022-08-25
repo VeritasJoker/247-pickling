@@ -31,7 +31,6 @@ CLONE_MODELS = [
 ]
 
 MLM_MODELS = [
-    "gpt2-xl",
     "bert-base-cased",
     "bert-large-uncased",
 ]
