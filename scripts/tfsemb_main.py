@@ -201,7 +201,6 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
     # (batch_size, max_len, vocab_size)
 
     # concatenate all batches
-    breakpoint()
     prediction_scores = torch.cat(concat_logits, axis=0)
     if "blenderbot" in args.embedding_type:
         true_y = torch.tensor(sentence_token_ids).unsqueeze(-1)
@@ -213,7 +212,6 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
         else:
             sti = torch.tensor(sentence_token_ids)
             true_y = torch.cat([sti[0, 1:], sti[1:, -1]]).unsqueeze(-1)
-    breakpoint()
     prediction_probabilities = F.softmax(prediction_scores, dim=1)
 
     logp = np.log2(prediction_probabilities)
@@ -242,6 +240,42 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
     true_y_probability = [None] + prediction_probabilities.gather(
         1, true_y
     ).squeeze(-1).tolist()
+    # TODO: probabilities of all words
+
+    return top1_words, top1_probabilities, true_y_probability, entropy
+
+
+def process_extracted_logits_bert(args, concat_logits, sentence_token_ids):
+    """Get the probability for the _correct_ word"""
+
+    prediction_scores = torch.cat(concat_logits, axis=0)
+    prediction_probabilities = F.softmax(prediction_scores, dim=1)
+
+    logp = np.log2(prediction_probabilities)
+    entropy = torch.sum(-prediction_probabilities * logp, dim=1).tolist()
+
+    top1_probabilities, top1_probabilities_idx = prediction_probabilities.max(
+        dim=1
+    )
+    predicted_tokens = args.tokenizer.convert_ids_to_tokens(
+        top1_probabilities_idx
+    )
+    predicted_words = predicted_tokens
+    if args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
+        predicted_words = [
+            args.tokenizer.convert_tokens_to_string(token)
+            for token in predicted_tokens
+        ]
+
+    # top-1 probabilities
+    top1_probabilities = top1_probabilities.tolist()
+    # top-1 word
+    top1_words = predicted_words
+    # probability of correct word
+    true_y = torch.tensor(sentence_token_ids).unsqueeze(-1)
+    true_y_probability = (
+        prediction_probabilities.gather(1, true_y).squeeze(-1).tolist()
+    )
     # TODO: probabilities of all words
 
     return top1_words, top1_probabilities, true_y_probability, entropy
@@ -565,7 +599,7 @@ def make_input_from_tokens(args, token_list):
         windows = [tuple(token_list)]
     else:
         windows = [
-            tuple(token_list[x : x + size + 1])
+            tuple(token_list[x : x + size])
             for x in range(len(token_list) - size + 1)
         ]
 
@@ -733,8 +767,13 @@ def model_forward_pass_bert(args, model_input):
                 all_embeddings.append(embeddings)
                 all_logits.append(logits)
             else:
-                for i in np.arange(0, batch.size()[1]):  # for gpt2
-                    # for i in np.arange(1, batch.size()[1] - 1): # for bert
+                if "gpt2" in args.tokenizer.name_or_path:
+                    start_token = 0
+                    end_token = batch.size()[1]
+                elif "bert" in args.tokenizer.name_or_path:
+                    start_token = 1
+                    end_token = batch.size()[1] - 1
+                for i in np.arange(start_token, end_token):
                     embeddings = extract_select_vectors_all_layers_bert(
                         i, model_output.hidden_states, args.layer_idx
                     )
@@ -745,7 +784,7 @@ def model_forward_pass_bert(args, model_input):
     return all_embeddings, all_logits
 
 
-def generate_mlm_embeddings(args, df, masked=True):
+def generate_mlm_embeddings(args, df, masked=False):
     df = tokenize_and_explode(args, df)
     final_embeddings = []
     final_top1_word = []
@@ -754,12 +793,17 @@ def generate_mlm_embeddings(args, df, masked=True):
     df = get_utt_info(args, df)
     token_list = df["token_id"].tolist()
 
+    if "gpt2" in args.tokenizer.name_or_path:
+        masked = False # only bert has mask
+
     if masked:
+        print('Masked')
         sntnc_info = df.loc[
             :, ("production", "token_idx_in_sntnc", "num_tokens_in_sntnc")
         ].reset_index()
         model_input = make_input_from_tokens_mask(args, token_list, sntnc_info)
     else:
+        print('No Mask')
         model_input = make_input_from_tokens_unmasked(args, df)
 
     embeddings, logits = model_forward_pass_bert(args, model_input)
@@ -768,7 +812,7 @@ def generate_mlm_embeddings(args, df, masked=True):
         assert item.shape[0] == len(token_list)
     final_embeddings.append(embeddings)
 
-    top1_word, top1_prob, true_y_prob, entropy = process_extracted_logits(
+    top1_word, top1_prob, true_y_prob, entropy = process_extracted_logits_bert(
         args, logits, token_list
     )
     final_top1_word.extend(top1_word)

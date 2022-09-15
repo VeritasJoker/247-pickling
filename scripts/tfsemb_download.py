@@ -8,6 +8,7 @@ from transformers import (
 )
 
 CAUSAL_MODELS = [
+    "gpt2-medium",
     "gpt2",
     "gpt2-large",
     "gpt2-xl",
@@ -31,8 +32,10 @@ CLONE_MODELS = [
 ]
 
 MLM_MODELS = [
+    # "gpt2-xl", # uncomment to run this model with MLM input
+    # "gpt2-medium", # uncomment to run this model with MLM input
     "bert-base-cased",
-    "bert-large-uncased",
+    "bert-large-cased",
 ]
 
 # TODO: Add MLM_MODELS (Masked Language Models)

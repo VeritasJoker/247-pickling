@@ -136,6 +136,7 @@ def main():
             "layer_48",
             "layer_16",
             "layer_8",
+            "layer_12",
         ]:
             trimmed_df = load_pickle(trimmed_labels, key="labels")
             all_df.set_index(["conversation_id", "index"], inplace=True)
