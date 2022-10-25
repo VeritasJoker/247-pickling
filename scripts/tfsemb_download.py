@@ -1,5 +1,6 @@
 import os
 
+<<<<<<< HEAD
 from transformers import (
     AutoModel,
     AutoModelForCausalLM,
@@ -7,6 +8,11 @@ from transformers import (
     AutoModelForMaskedLM,
     AutoTokenizer,
 )
+=======
+from transformers import (AutoModel, AutoModelForCausalLM,
+                          AutoModelForMaskedLM, AutoModelForSeq2SeqLM,
+                          AutoTokenizer)
+>>>>>>> d86fc0985b00f15a87381f8c2f08f4c5e0f2f30f
 
 CAUSAL_MODELS = [
     "gpt2",
@@ -26,12 +32,20 @@ CAUSAL_MODELS = [
 ]
 SEQ2SEQ_MODELS = ["facebook/blenderbot_small-90M", "facebook/blenderbot-3B"]
 
-CLONE_MODELS = [
-    "EleutherAI/gpt-neox-20b",
-    "facebook/opt-6.7b",
-    "facebook/opt-30b",
+CLONE_MODELS = []
+
+MLM_MODELS = [
+    # "gpt2-xl", # uncomment to run this model with MLM input
+    # "gpt2-medium", # uncomment to run this model with MLM input
+    "bert-base-uncased",
+    "bert-large-uncased",
+    "bert-base-cased",
+    "bert-large-cased",
+    "roberta-base",
+    "roberta-large",
 ]
 
+<<<<<<< HEAD
 # TODO: Add MLM_MODELS (Masked Language Models)
 MLM_MODELS = [
     # "gpt2-xl", # uncomment to run this model with MLM input
@@ -44,6 +58,8 @@ MLM_MODELS = [
     "roberta-large",
 ]
 
+=======
+>>>>>>> d86fc0985b00f15a87381f8c2f08f4c5e0f2f30f
 
 def download_hf_model(
     model_name, model_class=None, cache_dir=None, local_files_only=False
@@ -102,7 +118,9 @@ def download_tokenizer_and_model(
         tuple: (tokenizer, model)
     """
     print("Downloading model")
-    model = download_hf_model(model_name, model_class, CACHE_DIR, local_files_only)
+    model = download_hf_model(
+        model_name, model_class, CACHE_DIR, local_files_only
+    )
 
     print("Downloading tokenizer")
     tokenizer = download_hf_tokenizer(
@@ -155,7 +173,9 @@ def clone_model_repo(
                 os.system("module load git")
 
             os.system(f"git lfs install")
-            os.system(f"git clone https://huggingface.co/{model_name} {model_dir}")
+            os.system(
+                f"git clone https://huggingface.co/{model_name} {model_dir}"
+            )
         except:
             # FIXME: Raise appropriate exception
             print("Possible git lfs version issues")
@@ -168,7 +188,9 @@ def set_cache_dir():
     return CACHE_DIR
 
 
-def download_tokenizers_and_models(model_name=None, local_files_only=False, debug=True):
+def download_tokenizers_and_models(
+    model_name=None, local_files_only=False, debug=True
+):
     """This function downloads the tokenizer and model for the specified model name.
 
     Args:

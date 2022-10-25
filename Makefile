@@ -18,7 +18,7 @@
 #   4. upload pickle
 
 # Miscellaneous: \
-247 Subjects IDs: 625, 676, and 7170 \
+247 Subjects IDs: 625, 676, 7170, and 798 \
 Podcast Subjects: 661 662 717 723 741 742 743 763 798 \
 777: Is the collection of significant electrodes
 
@@ -53,8 +53,8 @@ endif
 # {echo | python}
 %-pickle: PRJCT_ID := tfs
 # {tfs | podcast}
-%-pickle: SID_LIST = 625
-# {625 676 7170 | 661 662 717 723 741 742 743 763 798 | 777}
+%-pickle: SID_LIST = 676
+# {625 676 7170 798 | 661 662 717 723 741 742 743 763 798 | 777}
 
 create-pickle:
 	mkdir -p logs
@@ -92,34 +92,42 @@ download-247-pickles:
 	gsutil -m rsync -x "^(?!.*676).*" gs://247-podcast-data/247-pickles/ results/676/
 
 ## settings for targets: generate-embeddings, concatenate-embeddings
-%-embeddings: PRJCT_ID := tfs
+%-embeddings: PRJCT_ID := podcast
 # {tfs | podcast}
-%-embeddings: SID := 7170
-# {625 | 676 | 7170 | 661} 
-%-embeddings: CONV_IDS = $(shell seq 1 24) 
-# {54 for 625 | 78 for 676 | 1 for 661 | 24 for 7170}
+%-embeddings: SID := 661
+# {625 | 676 | 7170 | 798 | 661} 
+%-embeddings: CONV_IDS = $(shell seq 1 1) 
+# {54 for 625 | 78 for 676 | 1 for 661 | 24 for 7170 | 15 for 798}
 %-embeddings: PKL_IDENTIFIER := full
 # {full | trimmed | binned}
-%-embeddings: EMB_TYPE := glove50
+%-embeddings: EMB_TYPE := gpt2-xl
 # {"gpt2", "gpt2-large", "gpt2-xl", \
 "EleutherAI/gpt-neo-125M", "EleutherAI/gpt-neo-1.3B", "EleutherAI/gpt-neo-2.7B", \
 "EleutherAI/gpt-neox-20b", \
 "facebook/opt-125m", "facebook/opt-350m", "facebook/opt-1.3b", \
 "facebook/opt-2.7b", "facebook/opt-6.7b", "facebook/opt-30b", \
 "facebook/blenderbot_small-90M"}
-%-embeddings: CNXT_LEN := 1
+%-embeddings: CNXT_LEN := 1024 512 256 128 64 32 16 8 4 2 1
 %-embeddings: LAYER := all
 # {'all' for all layers | 'last' for the last layer | (list of) integer(s) >= 1}
 # Note: embeddings file is the same for all podcast subjects \
 and hence only generate once using subject: 661
 %-embeddings: JOB_NAME = $(subst /,-,$(EMB_TYPE))
-%-embeddings: CMD = sbatch --job-name=$(SID)-$(JOB_NAME)-cnxt-$$cnxt_len submit.sh
+%-embeddings: CMD = python
 # {echo | python | sbatch --job-name=$(SID)-$(JOB_NAME)-cnxt-$$cnxt_len submit.sh}
 
 # 38 and 39 failed
 
+# generate-base-for-embeddings: Generates the base dataframe for embedding generation
+generate-base-for-embeddings:
+	python scripts/tfsemb_LMBase.py \
+			--project-id $(PRJCT_ID) \
+			--pkl-identifier $(PKL_IDENTIFIER) \
+			--subject $(SID) \
+			--embedding-type $(EMB_TYPE);
+
 # generates embeddings (for each conversation separately)
-generate-embeddings:
+generate-embeddings: generate-base-for-embeddings
 	mkdir -p logs
 	for cnxt_len in $(CNXT_LEN); do \
 		for conv_id in $(CONV_IDS); do \
@@ -157,7 +165,7 @@ copy-embeddings:
 
 # Download huggingface models to cache (before generating embeddings)
 # This target needs to be run on the head node
-cache-models: MODEL := seq2seq
-# {causal | seq2seq | or any model name specified in EMB_TYPE comments}
+cache-models: MODEL := causal
+# {causal | seq2seq | mlm | or any model name specified in EMB_TYPE comments}
 cache-models:
 	python -c "from scripts import tfsemb_download; tfsemb_download.download_tokenizers_and_models(\"$(MODEL)\")"
