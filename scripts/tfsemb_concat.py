@@ -32,6 +32,8 @@ def main():
         num_convs = 78
     elif args.subject == "7170":
         num_convs = 24
+    elif args.subject == "798":
+        num_convs = 15
     else:
         num_convs = 1
 
