@@ -1,11 +1,8 @@
 import os
 
-from transformers import (
-    AutoModel,
-    AutoModelForCausalLM,
-    AutoModelForSeq2SeqLM,
-    AutoTokenizer,
-)
+from transformers import (AutoModel, AutoModelForCausalLM,
+                          AutoModelForMaskedLM, AutoModelForSeq2SeqLM,
+                          AutoTokenizer)
 
 CAUSAL_MODELS = [
     "gpt2",
@@ -24,16 +21,15 @@ CAUSAL_MODELS = [
 ]
 SEQ2SEQ_MODELS = ["facebook/blenderbot_small-90M", "facebook/blenderbot-3B"]
 
-CLONE_MODELS = [
-    "EleutherAI/gpt-neox-20b",
-    "facebook/opt-6.7b",
-    "facebook/opt-30b",
-]
+CLONE_MODELS = []
 
-# TODO: Add MLM_MODELS (Masked Language Models)
 MLM_MODELS = [
+    # "gpt2-xl", # uncomment to run this model with MLM input
+    # "gpt2-medium", # uncomment to run this model with MLM input
     "bert-base-uncased",
     "bert-large-uncased",
+    "bert-base-cased",
+    "bert-large-cased",
     "roberta-base",
     "roberta-large",
 ]
@@ -193,6 +189,9 @@ def download_tokenizers_and_models(
     elif model_name == "seq2seq":
         model_class = AutoModelForSeq2SeqLM
         MODELS = SEQ2SEQ_MODELS if model_name == "seq2seq" else [model_name]
+    elif model_name == "mlm" or model_name in MLM_MODELS:
+        model_class = AutoModelForMaskedLM
+        MODELS = MLM_MODELS if model_name == "mlm" else [model_name]
     else:
         print("Invalid Model Name")
         exit(1)
