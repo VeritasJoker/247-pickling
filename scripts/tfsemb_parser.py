@@ -17,6 +17,9 @@ def arg_parser():
     parser.add_argument("--pkl-identifier", type=str, default=None)
     parser.add_argument("--project-id", type=str, default=None)
     parser.add_argument("--layer-idx", nargs="*", default=["all"])
+    parser.add_argument("--masked", action="store_true", default=False)
+    parser.add_argument("--lctx", action="store_true", default=False)
+    parser.add_argument("--rctx", action="store_true", default=False)
 
     # If running the code in debug mode
     gettrace = getattr(sys, "gettrace", None)

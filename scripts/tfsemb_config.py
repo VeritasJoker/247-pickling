@@ -116,8 +116,16 @@ def setup_environ(args):
     )
 
     select_tokenizer_and_model(args)
-    stra = f"{args.trimmed_model_name}/{args.pkl_identifier}/cnxt_{args.context_length:04d}"
 
+    if args.trimmed_model_name in tfsemb_dwnld.MLM_MODELS:
+        if args.masked:
+            args.pkl_identifier = args.pkl_identifier + "_masked"
+        if args.lctx:
+            args.pkl_identifier = args.pkl_identifier + "_lctx"
+        if args.rctx:
+            args.pkl_identifier = args.pkl_identifier + "_rctx"
+
+    stra = f"{args.trimmed_model_name}/{args.pkl_identifier}/cnxt_{args.context_length:04d}"
     # TODO: if multiple conversations are specified in input
     if args.conversation_id:
         args.output_dir = os.path.join(
@@ -128,7 +136,7 @@ def setup_environ(args):
         output_file_name = args.conversation_list[args.conversation_id - 1]
         args.output_file = os.path.join(args.output_dir, output_file_name)
 
-        # saving the base dataframe
+    # saving the base dataframe
     args.base_df_file = os.path.join(
         args.EMB_DIR,
         args.trimmed_model_name,
