@@ -99,6 +99,7 @@ def setup_environ(args):
 
     args.PKL_DIR = os.path.join(RESULTS_DIR, args.subject, "pickles")
     args.EMB_DIR = os.path.join(RESULTS_DIR, args.subject, "embeddings")
+    args.EMB_DIR2 = os.path.join(args.PKL_DIR, "embeddings")
 
     args.full_model_name = args.embedding_type
     args.trimmed_model_name = args.embedding_type.split("/")[-1]
@@ -139,6 +140,13 @@ def setup_environ(args):
     # saving the base dataframe
     args.base_df_file = os.path.join(
         args.EMB_DIR,
+        args.trimmed_model_name,
+        args.pkl_identifier,
+        "base_df.pkl",
+    )
+    
+    args.base_df_file2 = os.path.join(
+        args.EMB_DIR2,
         args.trimmed_model_name,
         args.pkl_identifier,
         "base_df.pkl",

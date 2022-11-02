@@ -1,11 +1,15 @@
 import os
-
-from transformers import (AutoModel, AutoModelForCausalLM,
-                          AutoModelForMaskedLM, AutoModelForSeq2SeqLM,
-                          AutoTokenizer)
+from transformers import (
+    AutoModel,
+    AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM,
+    AutoModelForMaskedLM,
+    AutoTokenizer,
+)
 
 CAUSAL_MODELS = [
     "gpt2",
+    "gpt2-medium",
     "gpt2-large",
     "gpt2-xl",
     "EleutherAI/gpt-neo-125M",
@@ -33,6 +37,7 @@ MLM_MODELS = [
     "roberta-base",
     "roberta-large",
 ]
+
 
 
 def download_hf_model(
