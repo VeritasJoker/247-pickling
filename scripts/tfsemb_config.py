@@ -42,14 +42,9 @@ def select_tokenizer_and_model(args):
         return
 
     try:
-        (
-            args.model,
-            args.tokenizer,
-        ) = tfsemb_dwnld.download_tokenizers_and_models(
+        (args.model, args.tokenizer,) = tfsemb_dwnld.download_tokenizers_and_models(
             model_name, local_files_only=True, debug=False
-        )[
-            model_name
-        ]
+        )[model_name]
     except OSError:
         # NOTE: Please refer to make-target: cache-models for more information.
         print(
@@ -112,9 +107,7 @@ def setup_environ(args):
     )
 
     args.input_dir = os.path.join(DATA_DIR, args.subject)
-    args.conversation_list = sorted(
-        glob.glob1(args.input_dir, "NY*Part*conversation*")
-    )
+    args.conversation_list = sorted(glob.glob1(args.input_dir, "NY*Part*conversation*"))
 
     select_tokenizer_and_model(args)
 
@@ -122,9 +115,11 @@ def setup_environ(args):
         if args.masked:
             args.pkl_identifier = args.pkl_identifier + "_masked"
         if args.lctx:
-            args.pkl_identifier = args.pkl_identifier + "_lctx"
+            args.pkl_identifier = args.pkl_identifier + "_l"
         if args.rctx:
-            args.pkl_identifier = args.pkl_identifier + "_rctx"
+            args.pkl_identifier = args.pkl_identifier + "_r"
+        if args.rctxp:
+            args.pkl_identifier = args.pkl_identifier + "_r10"
 
     stra = f"{args.trimmed_model_name}/{args.pkl_identifier}/cnxt_{args.context_length:04d}"
     # TODO: if multiple conversations are specified in input
@@ -144,7 +139,7 @@ def setup_environ(args):
         args.pkl_identifier,
         "base_df.pkl",
     )
-    
+
     args.base_df_file2 = os.path.join(
         args.EMB_DIR2,
         args.trimmed_model_name,
