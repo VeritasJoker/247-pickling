@@ -1,7 +1,7 @@
 import gensim.downloader as api
 import tfsemb_download as tfsemb_dwnld
 from tfsemb_config import setup_environ
-from tfsemb_main import tokenize_and_explode
+from tfsemb_main import tokenize_and_explode, get_utt_info
 from tfsemb_parser import arg_parser
 from utils import load_pickle, main_timer
 from utils import save_pickle as svpkl
@@ -19,9 +19,7 @@ def add_vocab_columns(args, df, column=None):
         *tfsemb_dwnld.MLM_MODELS,
     ]:
         try:
-            tokenizer = tfsemb_dwnld.download_hf_tokenizer(
-                model, local_files_only=True
-            )
+            tokenizer = tfsemb_dwnld.download_hf_tokenizer(model, local_files_only=True)
         except:
             tokenizer = tfsemb_dwnld.download_hf_tokenizer(
                 model, local_files_only=False
@@ -35,9 +33,18 @@ def add_vocab_columns(args, df, column=None):
         except AttributeError:
             curr_vocab = tokenizer.get_vocab()
 
-        df[f"in_{key}"] = df[column].apply(
-            lambda x: isinstance(curr_vocab.get(x), int)
-        )
+        df[f"in_{key}"] = df[column].apply(lambda x: isinstance(curr_vocab.get(x), int))
+
+    return df
+
+
+def truncate_df(args, df):
+
+    if args.embedding_type in tfsemb_dwnld.MLM_MODELS:
+        df = get_utt_info(df, args.tokenizer.max_len_single_sentence, True)
+    elif args.embedding_type in tfsemb_dwnld.SEQ2SEQ_MODELS:
+        print("Not implemented") #TODO
+        breakpoint()
 
     return df
 
@@ -58,6 +65,7 @@ def main():
             lambda x: isinstance(glove.key_to_index.get(x), int)
         )
         base_df = tokenize_and_explode(args, base_df)
+        base_df = truncate_df(args, base_df)
         base_df = add_vocab_columns(args, base_df, column="token")
 
     svpkl(base_df, args.base_df_file)
