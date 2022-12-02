@@ -239,7 +239,6 @@ def model_forward_pass(args, data_dl):
             print(batch_idx)
             batch = batch.to(args.device)
             model_output = model(batch)
-            breakpoint()
             logits = model_output.logits.cpu()
 
             embeddings = extract_select_vectors_all_layers(
@@ -491,12 +490,8 @@ def make_input_from_tokens(args, token_list):
         windows = [tuple(token_list)]
     else:
         windows = [
-<<<<<<< HEAD
-            tuple(token_list[x : x + size + 1]) for x in range(len(token_list) - size + 1)
-=======
             tuple(token_list[x : x + size])
             for x in range(len(token_list) - size + 1)
->>>>>>> 2fa1ef112ec80af92b5d78b2903daee130fb20ec
         ]
 
     return windows
