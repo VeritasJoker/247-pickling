@@ -48,9 +48,7 @@ def check_token_is_root(args, df):
     token_is_root_string = args.embedding_type.split("/")[-1] + "_token_is_root"
     df[token_is_root_string] = (
         df["word"]
-        == df["token"]
-        .apply(args.tokenizer.convert_tokens_to_string)
-        .str.strip()
+        == df["token"].apply(args.tokenizer.convert_tokens_to_string).str.strip()
     )
 
     return df
@@ -123,9 +121,7 @@ def process_extracted_embeddings_all_layers(args, layer_embeddings_dict):
         concat_output = []
         for item_dict in layer_embeddings_dict:
             concat_output.append(item_dict[layer_idx])
-        layer_embeddings[layer_idx] = process_extracted_embeddings(
-            args, concat_output
-        )
+        layer_embeddings[layer_idx] = process_extracted_embeddings(args, concat_output)
 
     return layer_embeddings
 
@@ -150,21 +146,14 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
     prediction_probabilities = F.softmax(prediction_scores, dim=1)
 
     logp = np.log2(prediction_probabilities)
-    entropy = [None] + torch.sum(
-        -prediction_probabilities * logp, dim=1
-    ).tolist()
+    entropy = [None] + torch.sum(-prediction_probabilities * logp, dim=1).tolist()
 
-    top1_probabilities, top1_probabilities_idx = prediction_probabilities.max(
-        dim=1
-    )
-    predicted_tokens = args.tokenizer.convert_ids_to_tokens(
-        top1_probabilities_idx
-    )
+    top1_probabilities, top1_probabilities_idx = prediction_probabilities.max(dim=1)
+    predicted_tokens = args.tokenizer.convert_ids_to_tokens(top1_probabilities_idx)
     predicted_words = predicted_tokens
     if args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
         predicted_words = [
-            args.tokenizer.convert_tokens_to_string(token)
-            for token in predicted_tokens
+            args.tokenizer.convert_tokens_to_string(token) for token in predicted_tokens
         ]
 
     # top-1 probabilities
@@ -172,18 +161,52 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
     # top-1 word
     top1_words = [None] + predicted_words
     # probability of correct word
-    true_y_probability = [None] + prediction_probabilities.gather(
-        1, true_y
-    ).squeeze(-1).tolist()
+    true_y_probability = [None] + prediction_probabilities.gather(1, true_y).squeeze(
+        -1
+    ).tolist()
     # true y rank
-    vocab_rank = torch.argsort(
-        prediction_probabilities, dim=-1, descending=True
-    )
+    vocab_rank = torch.argsort(prediction_probabilities, dim=-1, descending=True)
     true_y_rank = [None] + (
         (vocab_rank == true_y).nonzero(as_tuple=True)[1] + 1
     ).tolist()
 
     # TODO: probabilities of all words
+
+    return (
+        top1_words,
+        top1_probabilities,
+        true_y_probability,
+        true_y_rank,
+        entropy,
+    )
+
+
+def process_extracted_logits_bert(args, concat_logits, sentence_token_ids):
+    """Get the probability for the _correct_ word"""
+
+    prediction_scores = torch.cat(concat_logits, axis=0)
+    prediction_probabilities = F.softmax(prediction_scores, dim=1)
+
+    logp = np.log2(prediction_probabilities)
+    entropy = torch.sum(-prediction_probabilities * logp, dim=1).tolist()
+
+    top1_probabilities, top1_probabilities_idx = prediction_probabilities.max(dim=1)
+    predicted_tokens = args.tokenizer.convert_ids_to_tokens(top1_probabilities_idx)
+    predicted_words = predicted_tokens
+    if args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
+        predicted_words = [
+            args.tokenizer.convert_tokens_to_string(token) for token in predicted_tokens
+        ]
+
+    # top-1 probabilities
+    top1_probabilities = top1_probabilities.tolist()
+    # top-1 word
+    top1_words = predicted_words
+    # probability of correct word
+    true_y = torch.tensor(sentence_token_ids).unsqueeze(-1)
+    true_y_probability = prediction_probabilities.gather(1, true_y).squeeze(-1).tolist()
+    vocab_rank = torch.argsort(prediction_probabilities, dim=-1, descending=True)
+    true_y_rank = ((vocab_rank == true_y).nonzero(as_tuple=True)[1] + 1).tolist()
 
     return (
         top1_words,
@@ -213,6 +236,16 @@ def extract_select_vectors(batch_idx, array):
     return x
 
 
+def extract_select_vectors_bert(mask_idx, array):
+    if mask_idx != -1:
+        x = array[:, mask_idx, :].clone()
+    else:
+        breakpoint()  # HACK Need this for faster implementation
+        x = array[:, 1:-1, :].clone()
+
+    return x
+
+
 def extract_select_vectors_all_layers(batch_idx, array, layers=None):
 
     array_actual = tuple(y.cpu() for y in array)
@@ -221,6 +254,18 @@ def extract_select_vectors_all_layers(batch_idx, array, layers=None):
     for layer_idx in layers:
         array = array_actual[layer_idx]
         all_layers_x[layer_idx] = extract_select_vectors(batch_idx, array)
+
+    return all_layers_x
+
+
+def extract_select_vectors_all_layers_bert(mask_idx, array, layers=None):
+
+    array_actual = tuple(y.cpu() for y in array)
+
+    all_layers_x = dict()
+    for layer_idx in layers:
+        array = array_actual[layer_idx]
+        all_layers_x[layer_idx] = extract_select_vectors_bert(mask_idx, array)
 
     return all_layers_x
 
@@ -236,7 +281,6 @@ def model_forward_pass(args, data_dl):
         all_embeddings = []
         all_logits = []
         for batch_idx, batch in enumerate(data_dl):
-            print(batch_idx)
             batch = batch.to(args.device)
             model_output = model(batch)
             logits = model_output.logits.cpu()
@@ -283,8 +327,7 @@ def transformer_forward_pass(args, data_dl):
             )
             # After: get all relevant layers
             embeddings = {
-                i: outputs[decoderkey][i - 8].cpu()[0, :-1, :]
-                for i in decoderlayers
+                i: outputs[decoderkey][i - 8].cpu()[0, :-1, :] for i in decoderlayers
             }
             logits = outputs.logits.cpu()[0, :-1, :]
 
@@ -311,9 +354,7 @@ def transformer_forward_pass(args, data_dl):
                             slice(512),
                         )  # second to last token embedding
                         for i in encoderlayers:
-                            encoder_embs[i][-token_idx - 1] = outputs[
-                                encoderkey
-                            ][i][
+                            encoder_embs[i][-token_idx - 1] = outputs[encoderkey][i][
                                 portion
                             ].cpu()  # update embeddings
                 all_embeddings[-1].update(encoder_embs)
@@ -406,9 +447,7 @@ def make_conversational_input(args, df):
             continue
         context = create_context(convo, j - 1)
         if len(context) > 0:
-            examples.append(
-                {"encoder_ids": context, "decoder_ids": response[:-1]}
-            )
+            examples.append({"encoder_ids": context, "decoder_ids": response[:-1]})
 
     # Ensure we maintained correct number of tokens per utterance
     first = np.array([len(e["decoder_ids"]) - 1 for e in examples])
@@ -435,6 +474,7 @@ def generate_conversational_embeddings(args, df):
     # This is a workaround. Blenderbot is limited to 128 tokens so having
     # long utterances breaks that. We remove them here, as well as the next
     # utterance to keep the turn taking the same.
+
     utt_lens = df.sentence_idx.value_counts(sort=False)
     long_utts = utt_lens.index[utt_lens > 128 - 2].values
     long_utts = np.concatenate((long_utts, long_utts + 1))
@@ -516,7 +556,6 @@ def generate_causal_embeddings(args, df):
         model_input = make_input_from_tokens(args, token_list)
         input_dl = make_dataloader_from_input(model_input)
         embeddings, logits = model_forward_pass(args, input_dl)
-
         embeddings = process_extracted_embeddings_all_layers(args, embeddings)
         for _, item in embeddings.items():
             assert item.shape[0] == len(token_list)
@@ -552,6 +591,205 @@ def generate_causal_embeddings(args, df):
     return df, final_embeddings
 
 
+def get_utt_info(df, ctx_len, multiple_convo=False):
+
+    if multiple_convo:
+        df["token_idx_in_sntnc"] = (
+            df.groupby([df.conversation_id, df.sentence_idx]).cumcount() + 1
+        )  # get token_idx in sentence
+    else:
+        df["token_idx_in_sntnc"] = (
+            df.groupby(df.sentence_idx).cumcount() + 1
+        )  # get token_idx in sentence
+
+    df["num_tokens_in_sntnc"] = np.where(
+        (df["sentence_idx"].ne(df["sentence_idx"].shift(-1)))
+        | (df["conversation_id"].ne(df["conversation_id"].shift(-1))),
+        df["token_idx_in_sntnc"],
+        np.nan,
+    )
+    df["num_tokens_in_sntnc"] = (
+        df["num_tokens_in_sntnc"].bfill().astype(int)
+    )  # get # of tokens in sentence
+
+    original_len = len(df.index)
+    df = df.loc[df["num_tokens_in_sntnc"] <= ctx_len, :]
+    new_len = len(df.index)
+    if new_len < original_len:
+        print(f"Deleted sentence, reducing {original_len - new_len} tokens ")
+
+    return df
+
+
+def make_input_from_tokens_utt(args, df):
+
+    windows = df.groupby("sentence_idx")["token_id"].apply(tuple).tolist()
+    if "bert" in args.tokenizer.name_or_path:
+        special_tokens = args.tokenizer.encode("")
+        windows = [
+            (special_tokens[0],) + window + (special_tokens[1],) for window in windows
+        ]
+    mask_ids = np.repeat(-1, len(windows))
+    return windows, mask_ids
+
+
+def get_mask_token_ids(args):
+    mask_string = "[MASK]"
+    if "roberta" in args.tokenizer.name_or_path:
+        mask_string = "<mask>"
+    special_tokens = args.tokenizer.encode(mask_string)
+
+    return special_tokens
+
+
+def make_input_from_tokens_mask(args, token_list, window_type):
+    assert len(token_list) == len(window_type.index)
+
+    special_tokens = get_mask_token_ids(args)
+
+    windows = []
+    mask_ids = np.empty([0], dtype=int)
+    for i, _ in enumerate(token_list):
+        window = (special_tokens[0],)  # start window
+        if args.lctx:  # adding left context
+            # print("Adding left context")
+            window = window + tuple(
+                token_list[i + 1 - window_type.loc[i, "token_idx_in_sntnc"] : i]
+            )
+        if args.masked:  # adding masked token
+            window = window + (special_tokens[1],)
+        else:  # adding unmasked current token
+            window = window + (token_list[i],)
+        mask_ids = np.append(mask_ids, len(window) - 1)
+        if args.rctx:
+            # print("Adding right context")
+            window = window + tuple(
+                token_list[
+                    i
+                    + 1 : i
+                    + window_type.loc[i, "num_tokens_in_sntnc"]
+                    - window_type.loc[i, "token_idx_in_sntnc"]
+                    + 1
+                ]
+            )
+        elif args.rctxp:
+            # print("Adding partial right context")
+            window = window + tuple(
+                token_list[
+                    i
+                    + 1 : min(
+                        i + 11,
+                        i
+                        + window_type.loc[i, "num_tokens_in_sntnc"]
+                        - window_type.loc[i, "token_idx_in_sntnc"]
+                        + 1,
+                    )
+                ]
+            )
+        window = window + (special_tokens[2],)
+        windows.append(window)
+
+    return windows, mask_ids
+
+
+def model_forward_pass_bert(args, model_input, mask_ids):
+    model = args.model
+    device = args.device
+
+    with torch.no_grad():
+        model = model.to(device)
+        model.eval()
+        all_embeddings = []
+        all_logits = []
+        for batch_idx, batch in enumerate(model_input):
+            mask_idx = mask_ids[batch_idx]
+            batch = torch.tensor([batch])
+            batch = batch.to(args.device)
+            model_output = model(batch)
+            logits = model_output.logits.cpu()
+
+            if mask_idx != -1 and "bert" in args.tokenizer.name_or_path:
+                embeddings = extract_select_vectors_all_layers_bert(
+                    mask_idx, model_output.hidden_states, args.layer_idx
+                )
+                logits = extract_select_vectors_bert(mask_idx, logits)
+                all_embeddings.append(embeddings)
+                all_logits.append(logits)
+            else:
+                if "gpt2" in args.tokenizer.name_or_path:
+                    start_token = 0
+                    end_token = batch.size()[1]
+                elif "bert" in args.tokenizer.name_or_path:
+                    start_token = 1
+                    end_token = batch.size()[1] - 1
+                for i in np.arange(start_token, end_token):
+                    embeddings = extract_select_vectors_all_layers_bert(
+                        i, model_output.hidden_states, args.layer_idx
+                    )
+                    single_logits = extract_select_vectors_bert(i, logits)
+                    all_embeddings.append(embeddings)
+                    all_logits.append(single_logits)
+
+    return all_embeddings, all_logits
+
+
+def generate_mlm_embeddings(args, df):
+    final_embeddings = []
+    final_top1_word = []
+    final_top1_prob = []
+    final_true_y_prob = []
+    final_true_y_rank = []
+    df = get_utt_info(df, args.context_length)
+    token_list = df["token_id"].tolist()
+
+    if args.lctx and args.rctx and not args.masked:
+        print("No Mask full utterance")
+        model_input, mask_ids = make_input_from_tokens_utt(args, df)
+    else:
+        print("Masked")
+        sntnc_info = df.loc[
+            :, ("production", "token_idx_in_sntnc", "num_tokens_in_sntnc")
+        ].reset_index()
+        model_input, mask_ids = make_input_from_tokens_mask(
+            args, token_list, sntnc_info
+        )
+
+    embeddings, logits = model_forward_pass_bert(args, model_input, mask_ids)
+    embeddings = process_extracted_embeddings_all_layers(args, embeddings)
+    for _, item in embeddings.items():
+        assert item.shape[0] == len(token_list)
+    final_embeddings.append(embeddings)
+
+    (
+        top1_word,
+        top1_prob,
+        true_y_prob,
+        true_y_rank,
+        entropy,
+    ) = process_extracted_logits_bert(args, logits, token_list)
+    final_top1_word.extend(top1_word)
+    final_top1_prob.extend(top1_prob)
+    final_true_y_prob.extend(true_y_prob)
+    final_true_y_rank.extend(true_y_rank)
+
+    if len(final_embeddings) > 1:
+        # TODO concat all embeddings and return a dictionary
+        # previous: np.concatenate(final_embeddings, axis=0)
+        raise NotImplementedError
+    else:
+        final_embeddings = final_embeddings[0]
+
+    df = pd.DataFrame()
+    df["top1_pred"] = final_top1_word
+    df["top1_pred_prob"] = final_top1_prob
+    df["true_pred_prob"] = final_true_y_prob
+    df["surprise"] = -df["true_pred_prob"] * np.log2(df["true_pred_prob"])
+    df["entropy"] = entropy
+    df.drop(columns=["utt", "utt_len", "utt_index"], errors="ignore")
+
+    return df, final_embeddings
+
+
 def get_vector(x, glove):
     try:
         return glove.get_vector(x)
@@ -574,6 +812,8 @@ def main():
 
     if os.path.exists(args.base_df_file):
         base_df = load_pickle(args.base_df_file)
+    elif os.path.exists(args.base_df_file2):
+        base_df = load_pickle(args.base_df_file2)
     else:
         raise Exception("Base dataframe does not exist")
 
@@ -583,6 +823,8 @@ def main():
     # Select generation function based on model type
     if args.embedding_type == "glove50":
         generate_func = generate_glove_embeddings
+    elif args.embedding_type in tfsemb_dwnld.MLM_MODELS:
+        generate_func = generate_mlm_embeddings
     elif args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
         generate_func = generate_causal_embeddings
     elif args.embedding_type in tfsemb_dwnld.SEQ2SEQ_MODELS:

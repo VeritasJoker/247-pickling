@@ -10,6 +10,7 @@ from transformers import (
 
 CAUSAL_MODELS = [
     "gpt2",
+    "gpt2-medium",
     "gpt2-large",
     "gpt2-xl",
     "EleutherAI/gpt-neo-125M",

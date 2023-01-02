@@ -26,12 +26,16 @@ def main():
 
     if args.subject == "625":
         num_convs = 54
-    elif args.subject == "676" and "blenderbot" in args.embedding_type:
+    elif args.subject == "676" and (
+        "blenderbot" in args.embedding_type or "bert" in args.embedding_type
+    ):
         num_convs = 76
     elif args.subject == "676":
         num_convs = 78
     elif args.subject == "7170":
         num_convs = 24
+    elif args.subject == "798":
+        num_convs = 15
     else:
         num_convs = 1
 

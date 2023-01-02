@@ -2,7 +2,7 @@ import gensim.downloader as api
 import pandas as pd
 import tfsemb_download as tfsemb_dwnld
 from tfsemb_config import setup_environ
-from tfsemb_main import tokenize_and_explode
+from tfsemb_main import tokenize_and_explode, get_utt_info
 from tfsemb_parser import arg_parser
 from utils import load_pickle, main_timer
 from utils import save_pickle as svpkl
@@ -20,7 +20,9 @@ def add_vocab_columns(args, df, column=None):
         *tfsemb_dwnld.MLM_MODELS,
     ]:
         try:
-            tokenizer = tfsemb_dwnld.download_hf_tokenizer(model, local_files_only=True)
+            tokenizer = tfsemb_dwnld.download_hf_tokenizer(
+                model, local_files_only=True
+            )
         except:
             tokenizer = tfsemb_dwnld.download_hf_tokenizer(
                 model, local_files_only=False
@@ -37,7 +39,9 @@ def add_vocab_columns(args, df, column=None):
         def helper(x):
             try:
                 if len(tokenizer.tokenize(x)) == 1:
-                    return isinstance(curr_vocab.get(tokenizer.tokenize(x)[0]), int)
+                    return isinstance(
+                        curr_vocab.get(tokenizer.tokenize(x)[0]), int
+                    )
             except:
                 return False
 
