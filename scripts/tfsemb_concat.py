@@ -65,7 +65,9 @@ def main():
     else:
         layer_folders = sorted(os.listdir(args.output_dir))
 
-    for layer_folder in tqdm(layer_folders, bar_format="Merging Layer..{n_fmt}"):
+    for layer_folder in tqdm(
+        layer_folders, bar_format="Merging Layer..{n_fmt}"
+    ):
         conversation_pickles = sorted(
             glob.glob(os.path.join(args.output_dir, layer_folder, "*"))
         )
@@ -119,8 +121,8 @@ def main():
                 save_pickle(all_exs, os.path.join(args.emb_out_dir, fn))
 
     # Deleting embeddings after concatenation
-    shutil.rmtree(args.output_dir, ignore_errors=True)
-    removeEmptyfolders(args.EMB_DIR)
+    # shutil.rmtree(args.output_dir, ignore_errors=True)
+    # removeEmptyfolders(args.EMB_DIR)
 
 
 if __name__ == "__main__":
