@@ -1,6 +1,7 @@
 import os
 import pickle
 import sys
+import whisper
 
 import gensim.downloader as api
 import numpy as np
@@ -12,8 +13,11 @@ import torch.utils.data as data
 from accelerate import Accelerator, find_executable_batch_size
 from tfsemb_config import setup_environ
 from tfsemb_parser import arg_parser
+from tfsemb_download import download_hf_processor
+from tfsemb_download import download_whisper_generative_model
 from utils import load_pickle, main_timer
 from utils import save_pickle as svpkl
+from scipy.io import wavfile
 
 
 def save_pickle(args, item, embeddings=None):
@@ -49,9 +53,7 @@ def check_token_is_root(args, df):
     token_is_root_string = args.embedding_type.split("/")[-1] + "_token_is_root"
     df[token_is_root_string] = (
         df["word"]
-        == df["token"]
-        .apply(args.tokenizer.convert_tokens_to_string)
-        .str.strip()
+        == df["token"].apply(args.tokenizer.convert_tokens_to_string).str.strip()
     )
 
     return df
@@ -101,7 +103,7 @@ def tokenize_and_explode(args, df):
 
 def process_extracted_embeddings(args, concat_output):
     """(batch_size, max_len, embedding_size)"""
-    # concatenate all batches
+
     concatenated_embeddings = torch.cat(concat_output, dim=0).numpy()
     extracted_embeddings = concatenated_embeddings
 
@@ -115,6 +117,8 @@ def process_extracted_embeddings(args, concat_output):
             [init_token_embedding, concatenated_embeddings], axis=0
         )
 
+    # here is where we could handle special tokens in whisper?
+
     return extracted_embeddings
 
 
@@ -124,9 +128,7 @@ def process_extracted_embeddings_all_layers(args, layer_embeddings_dict):
         concat_output = []
         for item_dict in layer_embeddings_dict:
             concat_output.append(item_dict[layer_idx])
-        layer_embeddings[layer_idx] = process_extracted_embeddings(
-            args, concat_output
-        )
+        layer_embeddings[layer_idx] = process_extracted_embeddings(args, concat_output)
 
     return layer_embeddings
 
@@ -134,9 +136,9 @@ def process_extracted_embeddings_all_layers(args, layer_embeddings_dict):
 def process_extracted_logits(args, concat_logits, sentence_token_ids):
     """Get the probability for the _correct_ word"""
     # (batch_size, max_len, vocab_size)
-
     # concatenate all batches
     prediction_scores = torch.cat(concat_logits, axis=0)
+
     if "blenderbot" in args.embedding_type:
         true_y = torch.tensor(sentence_token_ids).unsqueeze(-1)
     else:
@@ -146,14 +148,15 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
             true_y = torch.tensor(sentence_token_ids[0][1:]).unsqueeze(-1)
         else:
             sti = torch.tensor(sentence_token_ids)
-            true_y = torch.cat([sti[0, 1:], sti[1:, -1]]).unsqueeze(-1)
+            if "whisper" in args.embedding_type:
+                true_y = torch.cat([sti[0, :], sti[1:, -1]]).unsqueeze(-1)
+            else:
+                true_y = torch.cat([sti[0, 1:], sti[1:, -1]]).unsqueeze(-1)
 
     prediction_probabilities = F.softmax(prediction_scores, dim=1)
 
     logp = np.log2(prediction_probabilities)
-    entropy = [None] + torch.sum(
-        -prediction_probabilities * logp, dim=1
-    ).tolist()
+    entropy = [None] + torch.sum(-prediction_probabilities * logp, dim=1).tolist()
 
     k = 250  # HACK (subject to change)
     top1_probabilities, top1_probabilities_idx = torch.topk(
@@ -165,9 +168,7 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
     )
 
     if k == 1:
-        predicted_tokens = args.tokenizer.convert_ids_to_tokens(
-            top1_probabilities_idx
-        )
+        predicted_tokens = args.tokenizer.convert_ids_to_tokens(top1_probabilities_idx)
     else:
         predicted_tokens = [
             args.tokenizer.convert_ids_to_tokens(item)
@@ -175,7 +176,10 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
         ]
 
     predicted_words = predicted_tokens
-    if args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
+    if (
+        args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS
+        or tfsemb_dwnld.SPEECHSEQ2SEQ_MODELS
+    ):
         if k == 1:
             predicted_words = [
                 args.tokenizer.convert_tokens_to_string(token)
@@ -183,10 +187,7 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
             ]
         else:
             predicted_words = [
-                [
-                    args.tokenizer.convert_tokens_to_string(token)
-                    for token in token_list
-                ]
+                [args.tokenizer.convert_tokens_to_string(token) for token in token_list]
                 for token_list in predicted_tokens
             ]
 
@@ -195,13 +196,11 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
     # top-1 word
     top1_words = [None] + predicted_words
     # probability of correct word
-    true_y_probability = [None] + prediction_probabilities.gather(
-        1, true_y
-    ).squeeze(-1).tolist()
+    true_y_probability = [None] + prediction_probabilities.gather(1, true_y).squeeze(
+        -1
+    ).tolist()
     # true y rank
-    vocab_rank = torch.argsort(
-        prediction_probabilities, dim=-1, descending=True
-    )
+    vocab_rank = torch.argsort(prediction_probabilities, dim=-1, descending=True)
     true_y_rank = [None] + (
         (vocab_rank == true_y).nonzero(as_tuple=True)[1] + 1
     ).tolist()
@@ -218,20 +217,53 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
 
 
 def extract_select_vectors(batch_idx, array):
-    if batch_idx == 0:  # first batch
-        x = array[0, :-1, :].clone()  # first window, all but last embeddings
+
+    # batch size / seq_length / dim
+
+    if batch_idx == 0:
+        x = array[0, :-1, :].clone()
         if array.shape[0] > 1:
-            try:  # (n-1)-th embedding
-                rem_sentences_preds = array[1:, -2, :].clone()
-            except:  # n-th embedding
-                rem_sentences_preds = array[1:, -1, :].clone()
+
+            rem_sentences_preds = array[1:, -1, :].clone()
 
             x = torch.cat([x, rem_sentences_preds], axis=0)
-    else:  # remaining batches
-        try:
-            x = array[:, -2, :].clone()
-        except:
-            x = array[:, -1, :].clone()
+    else:
+        # try:
+        #     x = array[:, -2, :].clone()
+        # except:
+        #     x = array[:, -1, :].clone()
+        x = array[:, -1, :].clone()
+
+    return x
+
+
+def extract_select_vectors_average(nhiddenstates, array):
+
+    embeddings_sum = array[:, -1, :]
+
+    for i in range(2, nhiddenstates):
+        embeddings_sum.add(array[:, -i, :])
+
+    x = embeddings_sum / nhiddenstates
+
+    return x
+
+
+def extract_select_vectors_average_all_layers(nhiddenstates, array, layers=None):
+
+    array_actual = tuple(y.cpu() for y in array)
+
+    all_layers_x = dict()
+    for layer_idx in layers:
+        array = array_actual[layer_idx]
+        all_layers_x[layer_idx] = extract_select_vectors_average(nhiddenstates, array)
+
+    return all_layers_x
+
+
+def extract_select_vectors_logits(batch_idx, array):
+
+    x = array[:, -2, :].clone()
 
     return x
 
@@ -307,8 +339,7 @@ def transformer_forward_pass(args, data_dl):
             )
             # After: get all relevant layers
             embeddings = {
-                i: outputs[decoderkey][i - 8].cpu()[0, :-1, :]
-                for i in decoderlayers
+                i: outputs[decoderkey][i - 8].cpu()[0, :-1, :] for i in decoderlayers
             }
             logits = outputs.logits.cpu()[0, :-1, :]
 
@@ -335,9 +366,7 @@ def transformer_forward_pass(args, data_dl):
                             slice(512),
                         )  # second to last token embedding
                         for i in encoderlayers:
-                            encoder_embs[i][-token_idx - 1] = outputs[
-                                encoderkey
-                            ][i][
+                            encoder_embs[i][-token_idx - 1] = outputs[encoderkey][i][
                                 portion
                             ].cpu()  # update embeddings
                 all_embeddings[-1].update(encoder_embs)
@@ -430,9 +459,7 @@ def make_conversational_input(args, df):
             continue
         context = create_context(convo, j - 1)
         if len(context) > 0:
-            examples.append(
-                {"encoder_ids": context, "decoder_ids": response[:-1]}
-            )
+            examples.append({"encoder_ids": context, "decoder_ids": response[:-1]})
 
     # Ensure we maintained correct number of tokens per utterance
     first = np.array([len(e["decoder_ids"]) - 1 for e in examples])
@@ -514,8 +541,7 @@ def make_input_from_tokens(args, token_list):
         windows = [tuple(token_list)]
     else:
         windows = [
-            tuple(token_list[x : x + size])
-            for x in range(len(token_list) - size + 1)
+            tuple(token_list[x : x + size]) for x in range(len(token_list) - size + 1)
         ]
 
     return windows
@@ -543,6 +569,316 @@ def inference_function(args, model_input):
     embeddings, logits = inner_training_loop()
 
     return embeddings, logits
+
+
+def get_conversation_df(df, conversation):
+    conversation_df = df[df.conversation_id == conversation]
+
+    # DEBUG
+    # conversation_df = conversation_df.iloc[:50]
+
+    # remove onset/ offset isnan
+    conversation_df = conversation_df.dropna(subset=["onset", "offset"])
+
+    # reset index
+    conversation_df.reset_index(drop=True, inplace=True)
+
+    # convert timestamps back to seconds and align
+    conversation_df["onset_converted"] = (conversation_df.onset + 3000) / 512
+    conversation_df["offset_converted"] = (conversation_df.offset + 3000) / 512
+
+    return conversation_df
+
+
+# def load_audio(conversation):
+
+#     breakpoint()
+
+#     # TO DO: from /conversation/*.wav something like this
+#     sampling_rate, audio = wavfile.read('/data/tfs/' + args.sid + '/*_conversation' + conversation + '/audio/*.wav')
+
+#     breakpoint()
+
+#     # for now implement it only for podcast
+#     # sampling_rate, audio = wavfile.read("/scratch/gpfs/ln1144/247-pickling/data/podcast/podcast_16k.wav")
+
+#     # convert to 16kHz if not already
+#     if sampling_rate != 16000:
+#         new_rate = 16000
+#         n_samples = round(len(audio) * float(new_rate)/sampling_rate)
+#         audio = sps.resample(audio,n_samples)
+
+#     return audio
+
+
+class AudioDataset(data.Dataset):
+    def __init__(self, args, audio, conversation_df, df, transform=None):
+        self.args = args
+        self.conversation_df = conversation_df
+        self.df = df
+        self.audio = audio
+        print(audio.shape)
+        self.transform = transform
+
+    def __len__(self):
+
+        return len(self.conversation_df.index)
+
+    def __getitem__(self, idx):
+
+        # get word onset and offset
+        chunk_offset = self.conversation_df.offset_converted.iloc[idx]
+        chunk_onset = np.max([0, (chunk_offset - 30)])
+
+        # extract audio segment
+        sampling_rate = 16000
+        chunk_data = self.audio[
+            int(chunk_onset * sampling_rate) : int(chunk_offset * sampling_rate)
+        ]
+
+        # debug
+        chunk_name = f"results/tfs/audio_segments/audio_segment_{idx:03d}-{self.conversation_df.word.iloc[idx]}.wav"
+        wavfile.write(chunk_name, sampling_rate, chunk_data)
+
+        # generate input features using whisper feature_extractor
+        inputs = self.args.processor.feature_extractor(
+            chunk_data, return_tensors="pt", sampling_rate=sampling_rate
+        )
+        input_features = inputs.input_features
+
+        # to give empty audio input
+        # input_features = torch.zeros(1,80,3000)
+
+        # to give random audio input
+        # input_features = torch.randn(1,80,3000)
+
+        if self.args.project_id == "podcast" and idx == 0:
+            context_tokens = self.df.iloc[:8][
+                "token"
+            ].tolist()  # to also include first 8 words that appear in the audio, but are cut off due to onset = NaN (only podcast)
+            context_tokens.extend(
+                self.conversation_df[
+                    (self.conversation_df.onset_converted >= chunk_onset)
+                    & (self.conversation_df.offset_converted <= chunk_offset)
+                ]["token"].tolist()
+            )
+        else:
+            context_tokens = self.conversation_df[
+                (self.conversation_df.onset_converted >= chunk_onset)
+                & (self.conversation_df.offset_converted <= chunk_offset)
+            ]["token"].tolist()
+
+        # add prefix tokens (for large v2):
+        # self.args.tokenizer.set_prefix_tokens(language="english", task="transcribe") - this does not work in current version of transformers (!)
+        # therefore use this:
+        # prefix_tokens = self.args.tokenizer.tokenize("<|startoftranscript|> <|en|> <|transcribe|>")
+        prefix_tokens = self.args.tokenizer.tokenize("<|startoftranscript|> ")
+        prefix_tokens.extend(context_tokens)
+        context_tokens = prefix_tokens
+
+        # if we want to use batch size > 1 we need to use padding (might be useful for large models)
+        # encoded_dict = self.args.tokenizer.encode_plus(context_tokens, padding="max_length", max_length=self.args.model.config.max_length, return_attention_mask=True, return_tensors="pt")
+        encoded_dict = self.args.processor.tokenizer.encode_plus(
+            context_tokens,
+            padding=False,
+            return_attention_mask=False,
+            return_tensors="pt",
+        )
+
+        # debug
+        # context_token_ids = torch.tensor(self.args.tokenizer.convert_tokens_to_ids(context_tokens))
+
+        context_token_ids = encoded_dict["input_ids"]
+        # if batchsize > 1:
+        # attention_mask = encoded_dict["attention_mask"]
+
+        # if batchsize > 1:
+        # sample = {"input_features": input_features.squeeze(), "context_token_ids": context_token_IDs.squeeze(), "attention_mask": attention_mask.squeeze()}
+        sample = {
+            "input_features": input_features.squeeze(),
+            "context_token_ids": context_token_ids.squeeze(),
+        }
+
+        return sample
+
+
+def make_dataloader_from_dataset(input_dataset):
+
+    data_dl = data.DataLoader(input_dataset, batch_size=1, shuffle=False)
+
+    return data_dl
+
+
+# currently working on this
+#
+# def speech_model_generate(args, data_dl):
+#     model = args.generativemodel
+#     device = args.device
+
+#     with torch.no_grad():
+#         model = model.to(device)
+#         model.eval()
+
+#         all_embeddings = []
+#         all_logits = []
+#         for batch_idx, batch in enumerate(data_dl):
+#             print(batch_idx)
+#             input_features = batch["input_features"].to(args.device)
+
+#             model_output = model.generate(inputs = input_features, return_dict_in_generate=True,output_hidden_states=True)
+
+#             breakpoint()
+
+#             embeddings = extract_select_vectors_all_layers(
+#                 batch_idx+1,model_output.decoder_hidden_states[-1],args.layer_idx
+#                 )
+
+#             # logits = extract_select_vectors(batch_idx+1, logits)
+
+#             breakpoint()
+
+#             all_embeddings.append(embeddings)
+#             all_logits.append(logits)
+
+#         return all_embeddings, all_logits
+
+
+def speech_model_forward_pass(args, data_dl):
+    model = args.model
+    device = args.device
+
+    with torch.no_grad():
+        model = model.to(device)
+        model.eval()
+
+        all_embeddings = []
+        all_logits = []
+        for batch_idx, batch in enumerate(data_dl):
+            print(batch_idx)
+            input_features = batch["input_features"].to(args.device)
+            decoder_input_ids = batch["context_token_ids"].to(args.device)
+
+            # if batchsize > 1
+            # decoder_attention_mask = batch["attention_mask"].to(args.device)
+            # model_output = model(input_features=input_features, decoder_input_ids=decoder_input_ids, decoder_attention_mask=decoder_attention_mask, output_hidden_states=True)
+
+            # if we want to cutoff decoder from encoder - basically only using decoder
+            # set encoder_outputs to 0:
+            # encoder_outputs = torch.zeros(1,1500,384).to(args.device)
+            # set cross attention heads to 0: (decoder layers, decoder attention heads)
+            # cross_attn_head_mask = torch.zeros(args.model.config.decoder_layers, args.model.config.decoder_attention_heads).to(args.device)
+            # model_output = model(input_features=input_features, decoder_input_ids=decoder_input_ids, output_hidden_states=True, cross_attn_head_mask=cross_attn_head_mask, encoder_outputs=encoder_outputs)
+
+            model_output = model(
+                input_features=input_features,
+                decoder_input_ids=decoder_input_ids,
+                output_hidden_states=True,
+            )
+            logits = model_output.logits.cpu()
+
+            # check if that works - this is supposed to concatenate all embeddings across batches
+            embeddings = extract_select_vectors_all_layers(
+                batch_idx + 1, model_output.decoder_hidden_states, args.layer_idx
+            )
+
+            # if encoder-only:
+            # embeddings = extract_select_vectors_average_all_layers(
+            #      5, model_output.encoder_hidden_states, args.layer_idx
+            #  )
+
+            # logits = extract_select_vectors_logits(batch_idx+1, logits) # concatenate logits across batches
+            logits = extract_select_vectors_logits(batch_idx, logits)  # for now
+
+            all_embeddings.append(embeddings)
+            all_logits.append(logits)
+
+    return all_embeddings, all_logits
+
+
+def generate_speech_embeddings(args, df):
+
+    final_embeddings = []
+    final_top1_word = []
+    final_top1_prob = []
+    final_true_y_prob = []
+    final_true_y_rank = []
+
+    # get model processor
+    args.processor = download_hf_processor(args.full_model_name)
+
+    # when using generative model:
+    # args.generativemodel = download_whisper_generative_model(args.full_model_name)
+
+    for conversation in df.conversation_id.unique():
+        conversation_df = get_conversation_df(df, conversation)
+
+        dir = "data/tfs/625"
+        sub_dirs = os.listdir(dir)
+        sub_dirs = sorted(sub_dirs, key=lambda x: x.split()[0])
+
+        path = (
+            dir
+            + "/"
+            + sub_dirs[conversation - 1]
+            + "/audio/"
+            + sub_dirs[conversation - 1]
+            + "_deid.wav"
+        )
+
+        audio = whisper.load_audio(path)
+
+        # for podcast:
+        # audio = whisper.load_audio("/scratch/gpfs/ln1144/247-pickling/data/podcast/podcast_16k.wav")
+
+        input_dataset = AudioDataset(args, audio, conversation_df, df)
+        input_dl = make_dataloader_from_dataset(input_dataset)
+        embeddings, logits = speech_model_forward_pass(args, input_dl)
+
+        # when using generative model:
+        # embeddings, logits = speech_model_generate(args,input_dl)
+
+        token_ids = conversation_df["token_id"].tolist()
+        token_ids = [tuple(token_ids)]
+
+        embeddings = process_extracted_embeddings_all_layers(args, embeddings)
+
+        for _, item in embeddings.items():
+            assert item.shape[0] == len(token_ids[0])
+
+        final_embeddings.append(embeddings)
+
+        (
+            top1_word,
+            top1_prob,
+            true_y_prob,
+            true_y_rank,
+            entropy,
+        ) = process_extracted_logits(args, logits, token_ids)
+
+        final_top1_word.extend(top1_word)
+        final_top1_prob.extend(top1_prob)
+        final_true_y_prob.extend(true_y_prob)
+        final_true_y_rank.extend(true_y_rank)
+
+    if len(final_embeddings) > 1:
+        # TODO concat all embeddings and return a dictionary
+        # previous: np.concatenate(final_embeddings, axis=0)
+        raise NotImplementedError
+    else:
+        final_embeddings = final_embeddings[0]
+
+    df = pd.DataFrame()
+    df["top1_pred"] = final_top1_word[1:]
+    df["top1_pred_prob"] = final_top1_prob[1:]
+    df["true_pred_prob"] = final_true_y_prob[1:]
+    df["true_pred_rank"] = final_true_y_rank[1:]
+    df["surprise"] = -df["true_pred_prob"] * np.log2(df["true_pred_prob"])
+    df["entropy"] = entropy[1:]
+
+    print(np.mean(df.true_pred_rank == 0))
+    print(np.mean(df.true_pred_rank == 1))
+
+    return df, final_embeddings
 
 
 def generate_causal_embeddings(args, df):
@@ -633,6 +969,8 @@ def main():
         generate_func = generate_causal_embeddings
     elif args.embedding_type in tfsemb_dwnld.SEQ2SEQ_MODELS:
         generate_func = generate_conversational_embeddings
+    elif args.embedding_type in tfsemb_dwnld.SPEECHSEQ2SEQ_MODELS:
+        generate_func = generate_speech_embeddings
     else:
         print('Invalid embedding type: "{}"'.format(args.embedding_type))
         return

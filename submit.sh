@@ -17,7 +17,7 @@ then
     echo "It's della-gpu"
     module purge
     module load anaconda3/2021.11
-    conda activate /home/hgazula/.conda/envs/247-main
+    conda activate 247-main
 else
     module purge
     module load anacondapy
