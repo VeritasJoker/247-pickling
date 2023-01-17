@@ -17,6 +17,7 @@ def arg_parser():
     parser.add_argument("--lctx", action="store_true", default=False)
     parser.add_argument("--rctx", action="store_true", default=False)
     parser.add_argument("--rctxp", action="store_true", default=False)
+    parser.add_argument("--utt", action="store_true", default=False)
 
     # If running the code in debug mode
     gettrace = getattr(sys, "gettrace", None)

@@ -48,7 +48,9 @@ def check_token_is_root(args, df):
     token_is_root_string = args.embedding_type.split("/")[-1] + "_token_is_root"
     df[token_is_root_string] = (
         df["word"]
-        == df["token"].apply(args.tokenizer.convert_tokens_to_string).str.strip()
+        == df["token"]
+        .apply(args.tokenizer.convert_tokens_to_string)
+        .str.strip()
     )
 
     return df
@@ -88,10 +90,8 @@ def tokenize_and_explode(args, df):
     df = check_token_is_root(args, df)
 
     # Add a token index for each word's token
-    for value in df["index"].unique():
-        if value is not None:
-            flag = df["index"] == value
-            df.loc[flag, "token_idx"] = np.arange(sum(flag))
+    df["token_idx"] = (df.groupby(["adjusted_onset","word"]).cumcount()).astype(int)
+    breakpoint()
 
     return df
 
@@ -121,7 +121,9 @@ def process_extracted_embeddings_all_layers(args, layer_embeddings_dict):
         concat_output = []
         for item_dict in layer_embeddings_dict:
             concat_output.append(item_dict[layer_idx])
-        layer_embeddings[layer_idx] = process_extracted_embeddings(args, concat_output)
+        layer_embeddings[layer_idx] = process_extracted_embeddings(
+            args, concat_output
+        )
 
     return layer_embeddings
 
@@ -146,14 +148,21 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
     prediction_probabilities = F.softmax(prediction_scores, dim=1)
 
     logp = np.log2(prediction_probabilities)
-    entropy = [None] + torch.sum(-prediction_probabilities * logp, dim=1).tolist()
+    entropy = [None] + torch.sum(
+        -prediction_probabilities * logp, dim=1
+    ).tolist()
 
-    top1_probabilities, top1_probabilities_idx = prediction_probabilities.max(dim=1)
-    predicted_tokens = args.tokenizer.convert_ids_to_tokens(top1_probabilities_idx)
+    top1_probabilities, top1_probabilities_idx = prediction_probabilities.max(
+        dim=1
+    )
+    predicted_tokens = args.tokenizer.convert_ids_to_tokens(
+        top1_probabilities_idx
+    )
     predicted_words = predicted_tokens
     if args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
         predicted_words = [
-            args.tokenizer.convert_tokens_to_string(token) for token in predicted_tokens
+            args.tokenizer.convert_tokens_to_string(token)
+            for token in predicted_tokens
         ]
 
     # top-1 probabilities
@@ -161,11 +170,13 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
     # top-1 word
     top1_words = [None] + predicted_words
     # probability of correct word
-    true_y_probability = [None] + prediction_probabilities.gather(1, true_y).squeeze(
-        -1
-    ).tolist()
+    true_y_probability = [None] + prediction_probabilities.gather(
+        1, true_y
+    ).squeeze(-1).tolist()
     # true y rank
-    vocab_rank = torch.argsort(prediction_probabilities, dim=-1, descending=True)
+    vocab_rank = torch.argsort(
+        prediction_probabilities, dim=-1, descending=True
+    )
     true_y_rank = [None] + (
         (vocab_rank == true_y).nonzero(as_tuple=True)[1] + 1
     ).tolist()
@@ -190,12 +201,17 @@ def process_extracted_logits_bert(args, concat_logits, sentence_token_ids):
     logp = np.log2(prediction_probabilities)
     entropy = torch.sum(-prediction_probabilities * logp, dim=1).tolist()
 
-    top1_probabilities, top1_probabilities_idx = prediction_probabilities.max(dim=1)
-    predicted_tokens = args.tokenizer.convert_ids_to_tokens(top1_probabilities_idx)
+    top1_probabilities, top1_probabilities_idx = prediction_probabilities.max(
+        dim=1
+    )
+    predicted_tokens = args.tokenizer.convert_ids_to_tokens(
+        top1_probabilities_idx
+    )
     predicted_words = predicted_tokens
     if args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
         predicted_words = [
-            args.tokenizer.convert_tokens_to_string(token) for token in predicted_tokens
+            args.tokenizer.convert_tokens_to_string(token)
+            for token in predicted_tokens
         ]
 
     # top-1 probabilities
@@ -204,9 +220,15 @@ def process_extracted_logits_bert(args, concat_logits, sentence_token_ids):
     top1_words = predicted_words
     # probability of correct word
     true_y = torch.tensor(sentence_token_ids).unsqueeze(-1)
-    true_y_probability = prediction_probabilities.gather(1, true_y).squeeze(-1).tolist()
-    vocab_rank = torch.argsort(prediction_probabilities, dim=-1, descending=True)
-    true_y_rank = ((vocab_rank == true_y).nonzero(as_tuple=True)[1] + 1).tolist()
+    true_y_probability = (
+        prediction_probabilities.gather(1, true_y).squeeze(-1).tolist()
+    )
+    vocab_rank = torch.argsort(
+        prediction_probabilities, dim=-1, descending=True
+    )
+    true_y_rank = (
+        (vocab_rank == true_y).nonzero(as_tuple=True)[1] + 1
+    ).tolist()
 
     return (
         top1_words,
@@ -327,7 +349,8 @@ def transformer_forward_pass(args, data_dl):
             )
             # After: get all relevant layers
             embeddings = {
-                i: outputs[decoderkey][i - 8].cpu()[0, :-1, :] for i in decoderlayers
+                i: outputs[decoderkey][i - 8].cpu()[0, :-1, :]
+                for i in decoderlayers
             }
             logits = outputs.logits.cpu()[0, :-1, :]
 
@@ -354,7 +377,9 @@ def transformer_forward_pass(args, data_dl):
                             slice(512),
                         )  # second to last token embedding
                         for i in encoderlayers:
-                            encoder_embs[i][-token_idx - 1] = outputs[encoderkey][i][
+                            encoder_embs[i][-token_idx - 1] = outputs[
+                                encoderkey
+                            ][i][
                                 portion
                             ].cpu()  # update embeddings
                 all_embeddings[-1].update(encoder_embs)
@@ -447,7 +472,9 @@ def make_conversational_input(args, df):
             continue
         context = create_context(convo, j - 1)
         if len(context) > 0:
-            examples.append({"encoder_ids": context, "decoder_ids": response[:-1]})
+            examples.append(
+                {"encoder_ids": context, "decoder_ids": response[:-1]}
+            )
 
     # Ensure we maintained correct number of tokens per utterance
     first = np.array([len(e["decoder_ids"]) - 1 for e in examples])
@@ -561,13 +588,20 @@ def generate_causal_embeddings(args, df):
             assert item.shape[0] == len(token_list)
         final_embeddings.append(embeddings)
 
-        (
-            top1_word,
-            top1_prob,
-            true_y_prob,
-            true_y_rank,
-            entropy,
-        ) = process_extracted_logits(args, logits, model_input)
+        if len(token_list) == 1:
+            top1_word = [None]
+            top1_prob = [None]
+            true_y_prob = [None]
+            true_y_rank = [None]
+            entropy = [None]
+        else:
+            (
+                top1_word,
+                top1_prob,
+                true_y_prob,
+                true_y_rank,
+                entropy,
+            ) = process_extracted_logits(args, logits, model_input)
         final_top1_word.extend(top1_word)
         final_top1_prob.extend(top1_prob)
         final_true_y_prob.extend(true_y_prob)
@@ -580,12 +614,15 @@ def generate_causal_embeddings(args, df):
     else:
         final_embeddings = final_embeddings[0]
 
-    df = pd.DataFrame()
+    df = pd.DataFrame(index=df.index)
     df["top1_pred"] = final_top1_word
     df["top1_pred_prob"] = final_top1_prob
     df["true_pred_prob"] = final_true_y_prob
     df["true_pred_rank"] = final_true_y_rank
-    df["surprise"] = -df["true_pred_prob"] * np.log2(df["true_pred_prob"])
+    if len(final_true_y_prob) != 1:
+        df["surprise"] = -df["true_pred_prob"] * np.log2(df["true_pred_prob"])
+    else:
+        df["surprise"] = [None]
     df["entropy"] = entropy
 
     return df, final_embeddings
@@ -621,18 +658,6 @@ def get_utt_info(df, ctx_len, multiple_convo=False):
     return df
 
 
-def make_input_from_tokens_utt(args, df):
-
-    windows = df.groupby("sentence_idx")["token_id"].apply(tuple).tolist()
-    if "bert" in args.tokenizer.name_or_path:
-        special_tokens = args.tokenizer.encode("")
-        windows = [
-            (special_tokens[0],) + window + (special_tokens[1],) for window in windows
-        ]
-    mask_ids = np.repeat(-1, len(windows))
-    return windows, mask_ids
-
-
 def get_mask_token_ids(args):
     mask_string = "[MASK]"
     if "roberta" in args.tokenizer.name_or_path:
@@ -640,6 +665,19 @@ def get_mask_token_ids(args):
     special_tokens = args.tokenizer.encode(mask_string)
 
     return special_tokens
+
+
+def make_input_from_tokens_utt(args, df):
+
+    windows = df.groupby("sentence_idx")["token_id"].apply(tuple).tolist()
+    if "bert" in args.tokenizer.name_or_path:
+        special_tokens = args.tokenizer.encode("")
+        windows = [
+            (special_tokens[0],) + window + (special_tokens[1],)
+            for window in windows
+        ]
+    mask_ids = np.repeat(-1, len(windows))
+    return windows, mask_ids
 
 
 def make_input_from_tokens_mask(args, token_list, window_type):
@@ -779,7 +817,7 @@ def generate_mlm_embeddings(args, df):
     else:
         final_embeddings = final_embeddings[0]
 
-    df = pd.DataFrame()
+    df = pd.DataFrame(index=df.index)
     df["top1_pred"] = final_top1_word
     df["top1_pred_prob"] = final_top1_prob
     df["true_pred_prob"] = final_true_y_prob
@@ -788,6 +826,28 @@ def generate_mlm_embeddings(args, df):
     df.drop(columns=["utt", "utt_len", "utt_index"], errors="ignore")
 
     return df, final_embeddings
+
+
+def generate_causal_embeddings_utt(args, df):
+
+    print("Generating by utterance")
+    all_df = []
+
+    windows = df.groupby("sentence_idx")
+
+    for sntnc_idx, utt_df in windows:
+        print(sntnc_idx)
+        utt_result, embeddings = generate_causal_embeddings(args, utt_df)
+        assert embeddings[48].shape[0] == len(utt_df)
+        utt_result["embeddings"] = embeddings[48].tolist()
+        all_df.append(utt_result)
+
+    all_df = pd.concat(all_df)
+    assert len(df) == len(all_df)
+    all_df.set_index(df.index, inplace=True)
+    # df = pd.concat([df, all_df], axis=1)
+
+    return all_df
 
 
 def get_vector(x, glove):
@@ -825,6 +885,8 @@ def main():
         generate_func = generate_glove_embeddings
     elif args.embedding_type in tfsemb_dwnld.MLM_MODELS:
         generate_func = generate_mlm_embeddings
+    elif args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS and args.utt:
+        generate_func = generate_causal_embeddings_utt
     elif args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
         generate_func = generate_causal_embeddings
     elif args.embedding_type in tfsemb_dwnld.SEQ2SEQ_MODELS:

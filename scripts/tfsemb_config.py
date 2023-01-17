@@ -121,6 +121,10 @@ def setup_environ(args):
         if args.rctxp:
             args.pkl_identifier = args.pkl_identifier + "_r10"
 
+    elif args.utt:
+        args.pkl_identifier = args.pkl_identifier + "_utt"
+
+
     stra = f"{args.trimmed_model_name}/{args.pkl_identifier}/cnxt_{args.context_length:04d}"
     # TODO: if multiple conversations are specified in input
     if args.conversation_id:
