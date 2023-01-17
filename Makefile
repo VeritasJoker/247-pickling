@@ -94,26 +94,26 @@ download-247-pickles:
 ## settings for targets: generate-embeddings, concatenate-embeddings
 %-embeddings: PRJCT_ID := tfs
 # {tfs | podcast}
-%-embeddings: SID := 625
+%-embeddings: SID := 798
 # {625 | 676 | 7170 | 798 | 661} 
-%-embeddings: CONV_IDS = $(shell seq 1 1) 
+%-embeddings: CONV_IDS = $(shell seq 1 54) 
 # {54 for 625 | 78 for 676 | 1 for 661 | 24 for 7170 | 15 for 798}
 %-embeddings: PKL_IDENTIFIER := full
 # {full | trimmed | binned}
-%-embeddings: EMB_TYPE := bert-large-cased
+%-embeddings: EMB_TYPE := gpt2-xl
 # {"gpt2", "gpt2-large", "gpt2-xl", \
 "EleutherAI/gpt-neo-125M", "EleutherAI/gpt-neo-1.3B", "EleutherAI/gpt-neo-2.7B", \
 "EleutherAI/gpt-neox-20b", \
 "facebook/opt-125m", "facebook/opt-350m", "facebook/opt-1.3b", \
 "facebook/opt-2.7b", "facebook/opt-6.7b", "facebook/opt-30b", \
 "facebook/blenderbot_small-90M"}
-%-embeddings: CNXT_LEN := 510
+%-embeddings: CNXT_LEN := 1024
 %-embeddings: LAYER := all
 # {'all' for all layers | 'last' for the last layer | (list of) integer(s) >= 1}
 # Note: embeddings file is the same for all podcast subjects \
 and hence only generate once using subject: 661
 %-embeddings: JOB_NAME = $(subst /,-,$(EMB_TYPE))
-%-embeddings: CMD = python
+%-embeddings: CMD = sbatch --job-name=$(SID)-$(JOB_NAME)-cnxt-$$cnxt_len submit.sh
 # {echo | python | sbatch --job-name=$(SID)-$(JOB_NAME)-cnxt-$$cnxt_len submit.sh}
 
 # 38 and 39 failed
@@ -122,9 +122,10 @@ and hence only generate once using subject: 661
 
 # arguments only for MLMs (comment out for false, should not affect causals)
 # %-embeddings: MASKED := --masked
-%-embeddings: LCTX := --lctx
+# %-embeddings: LCTX := --lctx
 # %-embeddings: RCTX := --rctx
-%-embeddings: RCTXP := --rctxp
+# %-embeddings: RCTXP := --rctxp
+# %-embeddings: UTT := --utt
 
 
 # generate-base-for-embeddings: Generates the base dataframe for embedding generation
@@ -137,7 +138,8 @@ generate-base-for-embeddings:
 			$(MASKED) \
 			$(LCTX) \
 			$(RCTX) \
-			$(RCTXP); \
+			$(RCTXP) \
+			$(UTT); \
 
 # generates embeddings (for each conversation separately)
 generate-embeddings:
@@ -155,6 +157,7 @@ generate-embeddings:
 				$(LCTX) \
 				$(RCTX) \
 				$(RCTXP) \
+				$(UTT) \
 				--context-length $$cnxt_len; \
 		done; \
 	done;
@@ -162,7 +165,7 @@ generate-embeddings:
 # concatenate embeddings from all conversations
 concatenate-embeddings:
 	for cnxt_len in $(CNXT_LEN); do \
-		$(CMD) scripts/tfsemb_concat.py \
+		python scripts/tfsemb_concat.py \
 			--project-id $(PRJCT_ID) \
 			--pkl-identifier $(PKL_IDENTIFIER) \
 			--subject $(SID) \
@@ -171,7 +174,8 @@ concatenate-embeddings:
 			$(MASKED) \
 			$(LCTX) \
 			$(RCTX) \
-			$(RCTXP); \
+			$(RCTXP) \
+			$(UTT); \
 	done;
 
 # Podcast: copy embeddings to other subjects as well
