@@ -9,6 +9,7 @@ import tfsemb_download as tfsemb_dwnld
 import torch
 import torch.nn.functional as F
 import torch.utils.data as data
+from accelerate import Accelerator, find_executable_batch_size
 from tfsemb_config import setup_environ
 from tfsemb_parser import arg_parser
 from utils import load_pickle, main_timer
@@ -154,18 +155,40 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
         -prediction_probabilities * logp, dim=1
     ).tolist()
 
-    top1_probabilities, top1_probabilities_idx = prediction_probabilities.max(
-        dim=1
+    k = 250  # HACK (subject to change)
+    top1_probabilities, top1_probabilities_idx = torch.topk(
+        prediction_probabilities, k, dim=1
     )
-    predicted_tokens = args.tokenizer.convert_ids_to_tokens(
-        top1_probabilities_idx
+    top1_probabilities, top1_probabilities_idx = (
+        top1_probabilities.squeeze(),
+        top1_probabilities_idx.squeeze(),
     )
+
+    if k == 1:
+        predicted_tokens = args.tokenizer.convert_ids_to_tokens(
+            top1_probabilities_idx
+        )
+    else:
+        predicted_tokens = [
+            args.tokenizer.convert_ids_to_tokens(item)
+            for item in top1_probabilities_idx
+        ]
+
     predicted_words = predicted_tokens
     if args.embedding_type in tfsemb_dwnld.CAUSAL_MODELS:
-        predicted_words = [
-            args.tokenizer.convert_tokens_to_string(token)
-            for token in predicted_tokens
-        ]
+        if k == 1:
+            predicted_words = [
+                args.tokenizer.convert_tokens_to_string(token)
+                for token in predicted_tokens
+            ]
+        else:
+            predicted_words = [
+                [
+                    args.tokenizer.convert_tokens_to_string(token)
+                    for token in token_list
+                ]
+                for token_list in predicted_tokens
+            ]
 
     # top-1 probabilities
     top1_probabilities = [None] + top1_probabilities.tolist()
@@ -195,16 +218,16 @@ def process_extracted_logits(args, concat_logits, sentence_token_ids):
 
 
 def extract_select_vectors(batch_idx, array):
-    if batch_idx == 0:
-        x = array[0, :-1, :].clone()
+    if batch_idx == 0:  # first batch
+        x = array[0, :-1, :].clone()  # first window, all but last embeddings
         if array.shape[0] > 1:
-            try:
+            try:  # (n-1)-th embedding
                 rem_sentences_preds = array[1:, -2, :].clone()
-            except:
+            except:  # n-th embedding
                 rem_sentences_preds = array[1:, -1, :].clone()
 
             x = torch.cat([x, rem_sentences_preds], axis=0)
-    else:
+    else:  # remaining batches
         try:
             x = array[:, -2, :].clone()
         except:
@@ -236,7 +259,8 @@ def model_forward_pass(args, data_dl):
         all_embeddings = []
         all_logits = []
         for batch_idx, batch in enumerate(data_dl):
-            print(batch_idx)
+            if batch_idx % 10 == 0:
+                print(f"Batch ID: {batch_idx}")
             batch = batch.to(args.device)
             model_output = model(batch)
             logits = model_output.logits.cpu()
@@ -497,10 +521,28 @@ def make_input_from_tokens(args, token_list):
     return windows
 
 
-def make_dataloader_from_input(windows):
+def make_dataloader_from_input(windows, batch_size):
     input_ids = torch.tensor(windows)
-    data_dl = data.DataLoader(input_ids, batch_size=8, shuffle=False)
+    data_dl = data.DataLoader(input_ids, batch_size=batch_size, shuffle=False)
     return data_dl
+
+
+def inference_function(args, model_input):
+    accelerator = Accelerator()
+
+    @find_executable_batch_size(starting_batch_size=128)
+    def inner_training_loop(batch_size=128):
+        nonlocal accelerator  # Ensure they can be used in our context
+        accelerator.free_memory()  # Free all lingering references
+        accelerator.print(f"Trying batch size: {batch_size}")
+        input_dl = make_dataloader_from_input(model_input, batch_size)
+        embeddings, logits = model_forward_pass(args, input_dl)
+
+        return embeddings, logits
+
+    embeddings, logits = inner_training_loop()
+
+    return embeddings, logits
 
 
 def generate_causal_embeddings(args, df):
@@ -511,11 +553,11 @@ def generate_causal_embeddings(args, df):
     final_top1_prob = []
     final_true_y_prob = []
     final_true_y_rank = []
+    final_logits = []
     for conversation in df.conversation_id.unique():
         token_list = get_conversation_tokens(df, conversation)
         model_input = make_input_from_tokens(args, token_list)
-        input_dl = make_dataloader_from_input(model_input)
-        embeddings, logits = model_forward_pass(args, input_dl)
+        embeddings, logits = inference_function(args, model_input)
 
         embeddings = process_extracted_embeddings_all_layers(args, embeddings)
         for _, item in embeddings.items():
@@ -533,6 +575,7 @@ def generate_causal_embeddings(args, df):
         final_top1_prob.extend(top1_prob)
         final_true_y_prob.extend(true_y_prob)
         final_true_y_rank.extend(true_y_rank)
+        final_logits.extend([None] + torch.cat(logits, axis=0).tolist())
 
     if len(final_embeddings) > 1:
         # TODO concat all embeddings and return a dictionary
@@ -542,14 +585,17 @@ def generate_causal_embeddings(args, df):
         final_embeddings = final_embeddings[0]
 
     df = pd.DataFrame()
-    df["top1_pred"] = final_top1_word
-    df["top1_pred_prob"] = final_top1_prob
+    df["topk_pred"] = final_top1_word
+    df["topk_pred_prob"] = final_top1_prob
     df["true_pred_prob"] = final_true_y_prob
     df["true_pred_rank"] = final_true_y_rank
     df["surprise"] = -df["true_pred_prob"] * np.log2(df["true_pred_prob"])
     df["entropy"] = entropy
 
-    return df, final_embeddings
+    df_logits = pd.DataFrame()
+    df_logits["logits"] = final_logits
+
+    return df, df_logits, final_embeddings
 
 
 def get_vector(x, glove):
@@ -594,8 +640,13 @@ def main():
     # Generate Embeddings
     embeddings = None
     output = generate_func(args, utterance_df)
-    if len(output) == 2:
-        df, embeddings = output
+    if len(output) == 3:
+        df, df_logits, embeddings = output
+        if not df_logits.empty:
+            svpkl(
+                df_logits,
+                os.path.join(args.logits_folder, args.output_file_name),
+            )
     else:
         df = output
 

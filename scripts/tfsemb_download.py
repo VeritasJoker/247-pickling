@@ -1,8 +1,12 @@
 import os
 
-from transformers import (AutoModel, AutoModelForCausalLM,
-                          AutoModelForMaskedLM, AutoModelForSeq2SeqLM,
-                          AutoTokenizer)
+from transformers import (
+    AutoModel,
+    AutoModelForCausalLM,
+    AutoModelForMaskedLM,
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+)
 
 CAUSAL_MODELS = [
     "gpt2",
@@ -18,10 +22,9 @@ CAUSAL_MODELS = [
     "facebook/opt-2.7b",
     "facebook/opt-6.7b",
     "facebook/opt-30b",
+    "bigscience/bloom",
 ]
 SEQ2SEQ_MODELS = ["facebook/blenderbot_small-90M", "facebook/blenderbot-3B"]
-
-CLONE_MODELS = []
 
 MLM_MODELS = [
     # "gpt2-xl", # uncomment to run this model with MLM input
@@ -33,6 +36,12 @@ MLM_MODELS = [
     "roberta-base",
     "roberta-large",
 ]
+
+MODEL_CLASS_MAP = {
+    "causal": (CAUSAL_MODELS, AutoModelForCausalLM),
+    "seq2seq": (SEQ2SEQ_MODELS, AutoModelForSeq2SeqLM),
+    "mlm": (MLM_MODELS, AutoModelForMaskedLM),
+}
 
 
 def download_hf_model(
@@ -104,62 +113,37 @@ def download_tokenizer_and_model(
     return (model, tokenizer)
 
 
-def clone_model_repo(
-    CACHE_DIR,
-    tokenizer_class,
-    model_class,
-    model_name,
-    local_files_only=False,
-):
-    """Cache (load) the model and tokenizer from the model repository (cache).
-
-    Args:
-        CACHE_DIR (str): path where the model and tokenizer will be cached.
-        tokenizer_class (Tokenizer): Tokenizer class to be instantiated for the model.
-        model_class (Huggingface Model): Model class corresponding to model_name.
-        model_name (str):  Model name as seen on https://hugginface.co/models.
-        local_files_only (bool, optional): False (Default) if caching.
-                                            True if loading from cache.
-
-    Returns:
-        tuple or None: (tokenizer, model) if local_files_only is True
-                        None if local_files_only is False.
-    """
-    model_dir = os.path.join(CACHE_DIR, model_name)
-
-    if local_files_only:
-        if os.path.exists(model_dir):
-            model, tokenizer = download_tokenizer_and_model(
-                CACHE_DIR,
-                tokenizer_class,
-                model_class,
-                model_dir,
-                local_files_only,
-            )
-            return model, tokenizer
-        else:
-            print(f"Model directory {model_dir} does not exist")
-    else:
-        try:
-            if (
-                "tiger" in os.uname().nodename
-            ):  # probably redundant, but just in case we are on tiger
-                os.system("module load git")
-
-            os.system(f"git lfs install")
-            os.system(
-                f"git clone https://huggingface.co/{model_name} {model_dir}"
-            )
-        except:
-            # FIXME: Raise appropriate exception
-            print("Possible git lfs version issues")
-    exit(1)
-
-
 def set_cache_dir():
     CACHE_DIR = os.path.join(os.path.dirname(os.getcwd()), ".cache")
     os.makedirs(CACHE_DIR, exist_ok=True)
     return CACHE_DIR
+
+
+def get_models_and_class(model_name):
+    """Return the appropriate model class and model to download
+    Args:
+        model_name (str): Model name as seen on https://hugginface.co/models.
+
+    Returns:
+        models (list): model name or models in the same class
+        mod_class (Huggingface Model): Model class corresponding to model_name.
+
+    """
+    models, mod_class = None, None
+    for model_key, (model_list, model_class) in MODEL_CLASS_MAP.items():
+        if model_name == model_key:
+            models, mod_class = model_list, model_class
+            break
+        elif model_name in model_list:
+            models, mod_class = [model_name], model_class
+            break
+        else:
+            continue
+
+    if not models or not model_class:
+        print("Invalid Model List or Model Class")
+
+    return models, mod_class
 
 
 def download_tokenizers_and_models(
@@ -183,30 +167,13 @@ def download_tokenizers_and_models(
         print("Input argument cannot be empty")
         return
 
-    if model_name == "causal" or model_name in CAUSAL_MODELS:
-        model_class = AutoModelForCausalLM
-        MODELS = CAUSAL_MODELS if model_name == "causal" else [model_name]
-    elif model_name == "seq2seq":
-        model_class = AutoModelForSeq2SeqLM
-        MODELS = SEQ2SEQ_MODELS if model_name == "seq2seq" else [model_name]
-    elif model_name == "mlm" or model_name in MLM_MODELS:
-        model_class = AutoModelForMaskedLM
-        MODELS = MLM_MODELS if model_name == "mlm" else [model_name]
-    else:
-        print("Invalid Model Name")
-        exit(1)
+    models, model_class = get_models_and_class(model_name)
 
     model_dict = {}
-    for model_name in MODELS:
+    for model_name in models:
         print(f"Model Name: {model_name}")
 
-        cache_function = (
-            clone_model_repo
-            if model_name in CLONE_MODELS
-            else download_tokenizer_and_model
-        )
-
-        model_dict[model_name] = cache_function(
+        model_dict[model_name] = download_tokenizer_and_model(
             CACHE_DIR,
             AutoTokenizer,
             model_class,
@@ -218,7 +185,7 @@ def download_tokenizers_and_models(
         if debug:
             print("Checking if model has been cached successfully")
             try:
-                cache_function(
+                download_tokenizer_and_model(
                     CACHE_DIR,
                     AutoTokenizer,
                     model_class,
