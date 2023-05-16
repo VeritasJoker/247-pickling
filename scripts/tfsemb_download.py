@@ -32,6 +32,7 @@ MLM_MODELS = [
     # "gpt2-medium", # uncomment to run this model with MLM input
     "bert-base-uncased",
     "bert-large-uncased",
+    "bert-large-uncased-whole-word-masking",
     "bert-base-cased",
     "bert-large-cased",
     "roberta-base",
